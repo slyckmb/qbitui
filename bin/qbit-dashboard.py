@@ -8,6 +8,7 @@ import select
 import shutil
 import sys
 import readline  # Enables line editing for input()
+import re
 import subprocess
 import termios
 import time
@@ -39,10 +40,19 @@ COLOR_YELLOW = "\033[33m"
 COLOR_BLUE = "\033[34m"
 COLOR_MAGENTA = "\033[35m"
 COLOR_PINK = "\033[38;5;210m"
-COLOR_BROWN = "\033[38;5;94m"
-COLOR_GREY = "\033[90m"
+COLOR_ORANGE = "\033[38;5;214m"
+COLOR_BRIGHT_GREEN = "\033[92m"
+COLOR_BRIGHT_CYAN = "\033[96m"
+COLOR_BRIGHT_YELLOW = "\033[93m"
+COLOR_BRIGHT_BLUE = "\033[94m"
+COLOR_BRIGHT_PURPLE = "\033[95m"
+COLOR_BRIGHT_RED = "\033[91m"
+COLOR_BRIGHT_WHITE = "\033[97m"
+COLOR_BROWN = "\033[38;5;214m"
+COLOR_GREY = "\033[38;5;245m"
 COLOR_BOLD = "\033[1m"
-COLOR_RESET = "\033[0m"
+COLOR_DEFAULT = "\033[38;5;250m"
+COLOR_RESET = "\033[0m\033[38;5;250m"
 
 LOCAL_TZ = ZoneInfo("America/New_York") if ZoneInfo else timezone.utc
 PRESET_FILE = Path(__file__).parent.parent / "config" / "qbit-filter-presets.yml"
@@ -265,18 +275,64 @@ def state_group(state: str) -> str:
 
 
 def status_color(state: str) -> str:
-    group = state_group(state)
-    if group == "error":
-        return COLOR_RED
-    if group == "paused":
+    s = (state or "").strip()
+    if s in {"error", "missingFiles"}:
+        return COLOR_BRIGHT_RED
+    if s in {"downloading", "forcedDL", "metaDL"}:
+        return COLOR_BRIGHT_GREEN
+    if s in {"uploading", "forcedUP"}:
         return COLOR_CYAN
-    if group in {"downloading", "uploading"}:
-        return COLOR_GREEN
-    if group in {"queued", "checking"}:
-        return COLOR_YELLOW
-    if group == "completed":
-        return COLOR_GREEN
-    return COLOR_RESET
+    if s in {"pausedDL", "pausedUP"}:
+        return COLOR_BRIGHT_YELLOW
+    if s in {"completed"}:
+        return COLOR_BRIGHT_PURPLE
+    if s in {"queuedDL", "queuedUP", "checkingUP", "checkingDL", "checkingResumeData", "queuedForChecking", "checking"}:
+        return COLOR_BRIGHT_BLUE
+    if s in {"stalledUP", "stalledDL", "allocating", "moving"}:
+        return COLOR_ORANGE
+    if not s:
+        return COLOR_BRIGHT_WHITE
+    return COLOR_BRIGHT_WHITE
+
+
+def mode_color(mode: str) -> str:
+    colors = {
+        "i": COLOR_BRIGHT_CYAN,
+        "p": COLOR_BRIGHT_YELLOW,
+        "d": COLOR_BRIGHT_RED,
+        "c": COLOR_ORANGE,
+        "t": COLOR_PINK,
+        "v": COLOR_BRIGHT_BLUE,
+        "A": COLOR_BRIGHT_GREEN,
+        "Q": COLOR_BRIGHT_PURPLE,
+    }
+    return colors.get(mode, COLOR_RESET)
+
+
+ANSI_RE = re.compile(r"\x1b\\[[0-9;]*m")
+
+
+def visible_len(value: str) -> int:
+    return len(ANSI_RE.sub("", value))
+
+
+def wrap_ansi(value: str, width: int) -> list[str]:
+    if width <= 0:
+        return [value]
+    lines = []
+    current = ""
+    for chunk in value.split(" "):
+        if not current:
+            current = chunk
+            continue
+        if visible_len(current) + 1 + visible_len(chunk) <= width:
+            current = current + " " + chunk
+        else:
+            lines.append(current)
+            current = chunk
+    if current:
+        lines.append(current)
+    return lines
 
 
 def size_str(value: int | float | None) -> str:
@@ -322,6 +378,60 @@ def eta_str(value: int | None) -> str:
     if hrs > 0:
         return f"{hrs}h{mins:02d}m"
     return f"{mins}m"
+
+
+def truncate(value: str, max_len: int) -> str:
+    if len(value) <= max_len:
+        return value
+    if max_len <= 1:
+        return value[:max_len]
+    if max_len <= 3:
+        return value[:max_len]
+    return value[: max_len - 3] + "..."
+
+
+def mediainfo_table(paths: list[Path]) -> str:
+    tool = shutil.which("mediainfo")
+    if not tool:
+        return "ERROR: mediainfo not found"
+    inform = (
+        "General;%FileName%|%Duration/String3%|%FileSize/String%|%OverallBitRate/String%|"
+        "%Format%|%Width%x%Height%|%FrameRate%|%BitRate/String%|%Channel(s)%|%SamplingRate/String%|%BitRate/String%\\n"
+    )
+    headers = [
+        "FileName", "Duration", "FileSize", "OverallBitRate", "Format",
+        "WxH", "FrameRate", "VideoBitRate", "Channels", "SamplingRate", "AudioBitRate",
+    ]
+    rows = []
+    for path in paths:
+        result = subprocess.run(
+            [tool, f"--Inform={inform}", str(path)],
+            capture_output=True,
+            text=True,
+        )
+        line = (result.stdout or "").strip()
+        if not line:
+            continue
+        parts = line.split("|")
+        if len(parts) < len(headers):
+            parts += [""] * (len(headers) - len(parts))
+        rows.append(parts[: len(headers)])
+    if not rows:
+        return "No mediainfo output"
+
+    caps = [60, 12, 10, 12, 10, 9, 8, 12, 8, 12, 12]
+    widths = []
+    for idx, header in enumerate(headers):
+        max_len = max(len(header), max(len(r[idx]) for r in rows))
+        widths.append(min(max_len, caps[idx]))
+
+    lines = []
+    lines.append("  ".join(truncate(headers[i], widths[i]).ljust(widths[i]) for i in range(len(headers))))
+    lines.append("  ".join("-" * widths[i] for i in range(len(headers))))
+    for row in rows:
+        line = "  ".join(truncate(str(row[i]), widths[i]).ljust(widths[i]) for i in range(len(headers)))
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def added_str(value: int | float | None) -> str:
@@ -406,6 +516,9 @@ def parse_tag_filter(value: str) -> dict | None:
     raw = value.strip()
     if not raw:
         return None
+    expr = parse_tag_expr(raw)
+    if expr:
+        return {"type": "tag", "raw": raw, "expr": expr}
     if "+" in raw:
         tags = [t.strip().lower() for t in raw.split("+") if t.strip()]
         return {"type": "tag", "mode": "and", "tags": tags, "raw": raw}
@@ -414,6 +527,99 @@ def parse_tag_filter(value: str) -> dict | None:
         return {"type": "tag", "mode": "or", "tags": tags, "raw": raw}
     return {"type": "tag", "mode": "or", "tags": [raw.lower()], "raw": raw}
 
+
+def _tokenize_tag_expr(value: str) -> list[str]:
+    tokens = []
+    i = 0
+    ops = set("+,()!")
+    while i < len(value):
+        ch = value[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if ch in ops:
+            tokens.append(ch)
+            i += 1
+            continue
+        start = i
+        while i < len(value) and not value[i].isspace() and value[i] not in ops:
+            i += 1
+        tokens.append(value[start:i])
+    return tokens
+
+
+def parse_tag_expr(value: str):
+    tokens = _tokenize_tag_expr(value)
+    if not tokens:
+        return None
+    idx = 0
+
+    def parse_expr():
+        return parse_or()
+
+    def parse_or():
+        node = parse_and()
+        items = [node]
+        while current() == ",":
+            advance()
+            items.append(parse_and())
+        if len(items) == 1:
+            return items[0]
+        return ("or", items)
+
+    def parse_and():
+        node = parse_unary()
+        items = [node]
+        while current() == "+":
+            advance()
+            items.append(parse_unary())
+        if len(items) == 1:
+            return items[0]
+        return ("and", items)
+
+    def parse_unary():
+        if current() == "!":
+            advance()
+            return ("not", parse_unary())
+        if current() == "(":
+            advance()
+            node = parse_expr()
+            if current() != ")":
+                return None
+            advance()
+            return node
+        token = current()
+        if token in (None, "+", ",", ")", "!"):
+            return None
+        advance()
+        return ("tag", token.lower())
+
+    def current():
+        return tokens[idx] if idx < len(tokens) else None
+
+    def advance():
+        nonlocal idx
+        idx += 1
+
+    tree = parse_expr()
+    if tree is None:
+        return None
+    if idx != len(tokens):
+        return None
+    return tree
+
+
+def eval_tag_expr(node, tag_set: set[str]) -> bool:
+    kind = node[0]
+    if kind == "tag":
+        return node[1] in tag_set
+    if kind == "not":
+        return not eval_tag_expr(node[1], tag_set)
+    if kind == "and":
+        return all(eval_tag_expr(item, tag_set) for item in node[1])
+    if kind == "or":
+        return any(eval_tag_expr(item, tag_set) for item in node[1])
+    return False
 
 def parse_filter_line(line: str, existing: list[dict]) -> list[dict]:
     tokens = shlex.split(line)
@@ -430,9 +636,17 @@ def parse_filter_line(line: str, existing: list[dict]) -> list[dict]:
         if not value:
             continue
         if key in ("text", "q", "name"):
-            updates["text"] = {"type": "text", "value": value, "enabled": True}
+            negate = False
+            if value.startswith("!"):
+                negate = True
+                value = value[1:]
+            updates["text"] = {"type": "text", "value": value, "enabled": True, "negate": negate}
         elif key in ("cat", "category"):
-            updates["category"] = {"type": "category", "value": value, "enabled": True}
+            negate = False
+            if value.startswith("!"):
+                negate = True
+                value = value[1:]
+            updates["category"] = {"type": "category", "value": value, "enabled": True, "negate": negate}
         elif key in ("tag", "tags"):
             parsed = parse_tag_filter(value)
             if parsed:
@@ -448,12 +662,16 @@ def summarize_filters(filters: list[dict]) -> str:
         return "-"
     parts = []
     for flt in active:
+        prefix = "!" if flt.get("negate") else ""
         if flt["type"] == "text":
-            parts.append(f"text={flt['value']}")
+            parts.append(f"text={prefix}{flt['value']}")
         elif flt["type"] == "category":
-            parts.append(f"cat={flt['value']}")
+            parts.append(f"cat={prefix}{flt['value']}")
         elif flt["type"] == "tag":
-            parts.append(f"tag={flt.get('raw', '')}")
+            raw = flt.get("raw", "")
+            if prefix and raw and not raw.startswith("!"):
+                raw = prefix + raw
+            parts.append(f"tag={raw}")
     return " ".join(parts)
 
 
@@ -466,13 +684,18 @@ def format_filters_line(filters: list[dict]) -> str:
         color = COLOR_PINK if active else ""
         reset = COLOR_RESET if active else ""
         if flt["type"] == "text":
-            parts.append(f"text={color}{flt['value']}{reset}")
+            prefix = "!" if flt.get("negate") else ""
+            parts.append(f"text={color}{prefix}{flt['value']}{reset}")
         elif flt["type"] == "category":
             cat_color = COLOR_BROWN if active else ""
             cat_reset = COLOR_RESET if active else ""
-            parts.append(f"cat={cat_color}{flt['value']}{cat_reset}")
+            prefix = "!" if flt.get("negate") else ""
+            parts.append(f"cat={cat_color}{prefix}{flt['value']}{cat_reset}")
         elif flt["type"] == "tag":
-            parts.append(f"tag={color}{flt.get('raw', '')}{reset}")
+            raw = flt.get("raw", "")
+            if flt.get("negate") and raw and not raw.startswith("!"):
+                raw = "!" + raw
+            parts.append(f"tag={color}{raw}{reset}")
     return "Filters: " + " ".join(parts)
 
 
@@ -500,9 +723,9 @@ def serialize_filters(filters: list[dict]) -> list[dict]:
     out = []
     for flt in filters:
         if flt["type"] == "text":
-            out.append({"type": "text", "value": flt["value"], "enabled": flt.get("enabled", True)})
+            out.append({"type": "text", "value": flt["value"], "enabled": flt.get("enabled", True), "negate": flt.get("negate", False)})
         elif flt["type"] == "category":
-            out.append({"type": "category", "value": flt["value"], "enabled": flt.get("enabled", True)})
+            out.append({"type": "category", "value": flt["value"], "enabled": flt.get("enabled", True), "negate": flt.get("negate", False)})
         elif flt["type"] == "tag":
             out.append({
                 "type": "tag",
@@ -510,6 +733,7 @@ def serialize_filters(filters: list[dict]) -> list[dict]:
                 "mode": flt.get("mode", "or"),
                 "tags": flt.get("tags", []),
                 "enabled": flt.get("enabled", True),
+                "negate": flt.get("negate", False),
             })
     return out
 
@@ -519,9 +743,9 @@ def restore_filters(items: list[dict]) -> list[dict]:
     for item in items or []:
         ftype = item.get("type")
         if ftype == "text" and item.get("value"):
-            filters.append({"type": "text", "value": item["value"], "enabled": item.get("enabled", True)})
+            filters.append({"type": "text", "value": item["value"], "enabled": item.get("enabled", True), "negate": item.get("negate", False)})
         elif ftype == "category" and item.get("value"):
-            filters.append({"type": "category", "value": item["value"], "enabled": item.get("enabled", True)})
+            filters.append({"type": "category", "value": item["value"], "enabled": item.get("enabled", True), "negate": item.get("negate", False)})
         elif ftype == "tag":
             raw = item.get("raw", "")
             if raw:
@@ -531,6 +755,7 @@ def restore_filters(items: list[dict]) -> list[dict]:
                     "mode": item.get("mode", parsed.get("mode", "or")),
                     "tags": item.get("tags", parsed.get("tags", [])),
                     "enabled": item.get("enabled", True),
+                    "negate": item.get("negate", False),
                 })
                 filters.append(parsed)
     return filters
@@ -544,24 +769,36 @@ def apply_filters(rows: list[dict], filters: list[dict]) -> list[dict]:
     for flt in active:
         if flt["type"] == "text":
             term = flt["value"].lower()
-            filtered = [r for r in filtered if term in (r.get("name") or "").lower()]
+            def match_text(r):
+                present = term in (r.get("name") or "").lower()
+                return not present if flt.get("negate") else present
+            filtered = [r for r in filtered if match_text(r)]
         elif flt["type"] == "category":
             category = flt["value"].lower()
-            if category == "-":
-                filtered = [r for r in filtered if not (r.get("raw", {}).get("category") or "").strip()]
-            else:
-                filtered = [r for r in filtered if (r.get("category") or "").lower() == category]
+            def match_cat(r):
+                raw_cat = (r.get("raw", {}).get("category") or "").strip().lower()
+                if category == "-":
+                    present = not raw_cat
+                else:
+                    present = raw_cat == category
+                return not present if flt.get("negate") else present
+            filtered = [r for r in filtered if match_cat(r)]
         elif flt["type"] == "tag":
             tags = set(flt.get("tags") or [])
             mode = flt.get("mode", "or")
-            if not tags:
+            expr = flt.get("expr")
+            if not tags and not expr:
                 continue
             def match(row: dict) -> bool:
                 raw_tags = row.get("raw", {}).get("tags") or ""
                 tag_set = {t.strip().lower() for t in raw_tags.split(",") if t.strip()}
-                if mode == "and":
-                    return tags.issubset(tag_set)
-                return bool(tags & tag_set)
+                if expr:
+                    present = eval_tag_expr(expr, tag_set)
+                elif mode == "and":
+                    present = tags.issubset(tag_set)
+                else:
+                    present = bool(tags & tag_set)
+                return not present if flt.get("negate") else present
             filtered = [r for r in filtered if match(r)]
     return filtered
 
@@ -669,6 +906,43 @@ def print_raw(item: dict) -> None:
     _ = get_key()
 
 
+def print_mediainfo(item: dict) -> None:
+    raw = item.get("raw") or {}
+    content_path = raw.get("content_path")
+    if not content_path:
+        save_path = raw.get("save_path") or ""
+        name = raw.get("name") or ""
+        content_path = str(Path(save_path) / name) if save_path and name else ""
+    if not content_path:
+        print("No content path available.")
+        print("Press any key to continue...", end="", flush=True)
+        _ = get_key()
+        return
+    path = Path(content_path)
+    if not path.exists():
+        print(f"Path not found: {path}")
+        print("Press any key to continue...", end="", flush=True)
+        _ = get_key()
+        return
+    files = []
+    if path.is_file():
+        files = [path]
+    else:
+        exts = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".m2ts", ".mpg", ".mpeg", ".webm", ".wmv",
+                ".mp3", ".m4b", ".m4a", ".flac", ".aac", ".ogg", ".wav"}
+        for item_path in sorted(path.rglob("*")):
+            if item_path.is_file() and item_path.suffix.lower() in exts:
+                files.append(item_path)
+    if not files:
+        print("No media files found for mediainfo.")
+        print("Press any key to continue...", end="", flush=True)
+        _ = get_key()
+        return
+    print(mediainfo_table(files))
+    print("")
+    print("Press any key to continue...", end="", flush=True)
+    _ = get_key()
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Interactive qBittorrent dashboard")
     parser.add_argument("--config", default=os.environ.get("QBITTORRENT_CONFIG_FILE"), help="Path to request-cache.yml")
@@ -703,6 +977,7 @@ def main() -> int:
     sort_desc = True
     show_tags = False
     show_full_hash = False
+    show_added = True
 
     while True:
         raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/info")
@@ -744,7 +1019,7 @@ def main() -> int:
         page_rows, total_pages, page = format_rows(rows, page, args.page_size)
 
         os.system("clear")
-        print(f"{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI){COLOR_RESET}")
+        print(f"{COLOR_DEFAULT}{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI){COLOR_RESET}")
         print(f"API: {api_url}")
         print(f"Summary: {summary(torrents)}")
         print("")
@@ -753,32 +1028,43 @@ def main() -> int:
         mode_label = {"i": "INFO", "p": "PAUSE/RESUME", "d": "DELETE", "c": "CATEGORY", "t": "TAGS", "v": "VERIFY", "A": "ADD PUBLIC TRACKERS", "Q": "QC TAG MEDIA"}[mode]
         page_label = f"Page {page + 1}/{total_pages}"
         sort_label = f"{sort_field} ({'desc' if sort_desc else 'asc'})"
-        print(f"Mode: {COLOR_BLUE}{mode_label}{COLOR_RESET}  Scope: {COLOR_MAGENTA}{scope_label}{COLOR_RESET}  Sort: {COLOR_GREY}{sort_label}{COLOR_RESET}  {page_label}")
+        mode_col = mode_color(mode)
+        print(f"Mode: {mode_col}{mode_label}{COLOR_RESET}  Scope: {COLOR_BRIGHT_CYAN}{scope_label}{COLOR_RESET}  Sort: {COLOR_BRIGHT_PURPLE}{sort_label}{COLOR_RESET}  {page_label}")
 
         print("")
+        name_width = 52
+        size_width = 12
+        cat_width = 14
         hash_width = 40 if show_full_hash else 6
         hash_label = "Hash"
-        header_line = f"{'No':<3} {'ST':<2} {'Name':<44} {'Prog':<6} {'Size':<10} {'DL':<8} {'UL':<8} {'ETA':<6} {'Added':<16} {'Cat':<10} {hash_label:<{hash_width}}"
+        added_part = f"{'Added':<16} " if show_added else ""
+        header_line = (
+            f"{'No':<3} {'ST':<2} "
+            f"{'Name':<{name_width}} "
+            f"{'Prog':<6} {'Size':<{size_width}} {'DL':<8} {'UL':<8} {'ETA':<6} "
+            f"{added_part}{'Cat':<{cat_width}} {hash_label:<{hash_width}}"
+        )
         divider_line = "-" * min(len(header_line), terminal_width())
         print(header_line)
         print(divider_line)
 
         for idx, item in enumerate(page_rows, 0):
-            color = status_color(item.get("state") or "")
-            name = (item.get("name") or "")[:44]
+            status_col = status_color(item.get("state") or "")
+            name = (item.get("name") or "")[:name_width]
             state = item.get("state") or ""
             st = item.get("st") or "?"
             cat_val = str(item.get("category") or "-")
+            added_value = f"{str(item.get('added') or '-'): <16} " if show_added else ""
             base_line = (
-                f"{idx:<3} {color}{st:<2}{COLOR_RESET} "
-                f"{color}{name:<44}{COLOR_RESET} "
+                f"{idx:<3} {status_col}{st:<2}{COLOR_RESET} "
+                f"{status_col}{name:<{name_width}}{COLOR_RESET} "
                 f"{str(item.get('progress') or '-'): <6} "
-                f"{str(item.get('size') or '-'): <10} "
+                f"{str(item.get('size') or '-'): <{size_width}} "
                 f"{str(item.get('dlspeed') or '-'): <8} "
                 f"{str(item.get('upspeed') or '-'): <8} "
                 f"{str(item.get('eta') or '-'): <6} "
-                f"{str(item.get('added') or '-'): <16} "
-                f"{COLOR_BROWN}{cat_val:<10}{COLOR_RESET} "
+                f"{added_value}"
+                f"{COLOR_BROWN}{cat_val:<{cat_width}}{COLOR_RESET} "
             )
             hash_value = str(item.get("hash") or "")
             hash_display = hash_value if show_full_hash else hash_value[:6] or "-"
@@ -793,32 +1079,38 @@ def main() -> int:
                         else:
                             tag_parts.append(f"{COLOR_PINK}{tag}{COLOR_RESET}")
                     tags_line = ", ".join(tag_parts)
-                    print(f"     tags: {tags_line}")
+                    indent = "     tags: "
+                    width = max(40, terminal_width() - len(indent))
+                    for line in wrap_ansi(tags_line, width):
+                        print(indent + line)
 
         print(divider_line)
         print(format_filters_line(filters))
         print(divider_line)
         print(
-            "Keys: 0-9=Apply  r=Refresh  D=Default  f=Filter  a=All  w=Down  u=Up  z=Paused  e=Done  g=Err  s=Sort  H=Hash"
+            "Keys: 0-9=Apply  r=Refresh  V=View  f=Filter  a=All  w=Down  u=Up  z=Paused  e=Done  g=Err  s=Sort  [D]=Added  [H]=Hash  [m]=MediaInfo"
         )
         print(
-            "      C=Cat  #=Tag  /=Line  F=Filters  P=Presets  S=Dir  T=Tags  [=Prev ]=Next  i/p/d/c/t/v/A/Q=Mode  R=Raw  ?=Help  x=Quit"
+            "      [C]=Cat  [#]=Tag  [/]Line  F=Filters  P=Presets  S=Dir  [T]=Tags  [=Prev ]=Next  i/p/d/c/t/v/A/Q=Mode  R=Raw  ?=Help  Ctrl-Q=Quit"
         )
         print(divider_line)
 
         key = get_key()
-        if key in ("x", "\x1b"):
+        if key == "\x11":
             break
         if key == "?":
             print("Modes: i=info, p=pause/resume, d=delete, c=category, t=tags, v=verify, A=add public trackers (non-private), Q=qc-tag-media")
             print("Paging: ] next page, [ previous page")
             print("Scope: a=all, w=downloading, u=uploading, z=paused, e=completed, g=error  Raw: R + item number")
-            print("Sort: s=cycle field, S=toggle asc/desc  Columns: T=toggle tags, H=toggle hash width")
-            print("Filters: f=text, C=category, #=tag (comma=OR, plus=AND), /=line, F=manage stack, P=presets")
+            print("Sort: s=cycle field, S=toggle asc/desc  Columns: T=toggle tags, D=toggle added, H=toggle hash width")
+            print("Filters: f=text, C=category, #=tag (comma=OR, plus=AND, !NOT, ()group), /=line, F=manage stack, P=presets")
+            print("Filter examples: text=anime cat=tv tag=ab+cross | text=!silo cat=- tag=(ab,cross)+!z")
+            print("MediaInfo: m + item number")
+            print("Quit: Ctrl-Q")
             print("Press any key to continue...", end="", flush=True)
             _ = get_key()
             continue
-        if key == "D":
+        if key == "V":
             mode = "i"
             scope = "all"
             page = 0
@@ -826,6 +1118,7 @@ def main() -> int:
             sort_index = 0
             sort_desc = True
             show_tags = False
+            show_added = True
             continue
         if key == "r":
             continue
@@ -857,7 +1150,10 @@ def main() -> int:
             value = read_line("\nText filter (blank clears): ").strip()
             filters = [f for f in filters if f["type"] != "text"]
             if value:
-                filters.append({"type": "text", "value": value, "enabled": True})
+                negate = value.startswith("!")
+                if negate:
+                    value = value[1:]
+                filters.append({"type": "text", "value": value, "enabled": True, "negate": negate})
             page = 0
             continue
         if key == "/":
@@ -870,11 +1166,14 @@ def main() -> int:
             value = read_line("\nCategory filter (blank clears): ").strip()
             filters = [f for f in filters if f["type"] != "category"]
             if value:
-                filters.append({"type": "category", "value": value, "enabled": True})
+                negate = value.startswith("!")
+                if negate:
+                    value = value[1:]
+                filters.append({"type": "category", "value": value, "enabled": True, "negate": negate})
             page = 0
             continue
         if key == "#":
-            value = read_line("\nTag filter (comma=OR, plus=AND; blank clears): ").strip()
+            value = read_line("\nTag filter (comma=OR, plus=AND, !NOT, ()group; blank clears): ").strip()
             filters = [f for f in filters if f["type"] != "tag"]
             parsed = parse_tag_filter(value)
             if parsed:
@@ -925,9 +1224,11 @@ def main() -> int:
             for idx, flt in enumerate(filters, 1):
                 flag = "x" if flt.get("enabled", True) else " "
                 if flt["type"] == "text":
-                    label = f"text={flt['value']}"
+                    prefix = "!" if flt.get("negate") else ""
+                    label = f"text={prefix}{flt['value']}"
                 elif flt["type"] == "category":
-                    label = f"cat={flt['value']}"
+                    prefix = "!" if flt.get("negate") else ""
+                    label = f"cat={prefix}{flt['value']}"
                 else:
                     label = f"tag={flt.get('raw', '')}"
                 print(f"  {idx}. [{flag}] {label}")
@@ -955,6 +1256,9 @@ def main() -> int:
         if key == "T":
             show_tags = not show_tags
             continue
+        if key == "D":
+            show_added = not show_added
+            continue
         if key == "H":
             show_full_hash = not show_full_hash
             continue
@@ -971,9 +1275,17 @@ def main() -> int:
             raw_choice = read_line("\nRaw item number (blank cancels): ").strip()
             if raw_choice.isdigit():
                 idx = int(raw_choice)
-                if 1 <= idx <= len(page_rows):
+                if 0 <= idx < len(page_rows):
                     print("")
-                    print_raw(page_rows[idx - 1])
+                    print_raw(page_rows[idx])
+            continue
+        if key == "m":
+            mi_choice = read_line("\nMediaInfo item number (blank cancels): ").strip()
+            if mi_choice.isdigit():
+                idx = int(mi_choice)
+                if 0 <= idx < len(page_rows):
+                    print("")
+                    print_mediainfo(page_rows[idx])
             continue
         if key and key.isdigit():
             idx = int(key)
