@@ -31,7 +31,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 LAST_UPDATED = "2026-01-21"
 
 COLOR_CYAN = "\033[36m"
@@ -444,8 +444,8 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
 
     if cache_file.exists():
         val = cache_file.read_text().strip()
-        # Invalidate cache if it contains an error message from a previous version
-        if val and "extraction failed" not in val and "returned no data" not in val:
+        # Invalidate old error messages or formats without dots
+        if val and " • " in val and not val.startswith("MediaInfo"):
             return val
 
     target = get_largest_media_file(content_path)
@@ -458,8 +458,8 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
     if not tool:
         return "ERROR: mediainfo not found"
 
-    # Template: Resolution Format BitRate | AudioFormat Channels | GeneralFormat
-    inform = "Video;%Width%x%Height% %Format% %BitRate/String%|Audio;| %Format% %Channel(s)%ch|General;| %Format%"
+    # Template covers General, Video, and Audio tracks.
+    inform = "General;%Format%|%Duration/String3%|%OverallBitRate/String%|Video;%Width%x%Height% %Format% %BitRate/String%|Audio;%Format% %Channel(s)%ch"
     
     result = subprocess.run(
         [tool, f"--Inform={inform}", str(target)],
@@ -467,14 +467,21 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
         text=True,
     )
     
-    mi_summary = (result.stdout or "").strip()
-    if not mi_summary:
+    res = (result.stdout or "").strip()
+    if not res:
+        # Fallback for files where track-specific templates might fail
+        result = subprocess.run([tool, "--Inform=General;%Format% %Duration/String3%", str(target)], capture_output=True, text=True)
+        res = (result.stdout or "").strip()
+
+    if not res:
         mi_summary = "MediaInfo extraction failed."
+    else:
+        # Split by pipes and join with dots for a clean 'info line' look
+        parts = [p.strip() for p in res.split("|") if p.strip()]
+        mi_summary = " • ".join(parts)
     
-    # Clean up and normalize
+    # Final cleanup
     mi_summary = mi_summary.replace("  ", " ").strip()
-    if mi_summary.startswith("|"):
-        mi_summary = mi_summary[1:].strip()
     
     cache_file.write_text(mi_summary)
     return mi_summary
@@ -1287,13 +1294,19 @@ def main() -> int:
             "      V=View F=Filters P=Presets S=Dir D=Added H=Hash T=Tags C=Cat M=MediaInfo [A/Q]=Modes R=Raw"
         )
         print(
-            "      0-9=Apply [=Prev ]=Next #=Tag /=Line ?=Help Ctrl-Q=Quit"
+            "      0-9=Apply [=Prev ]=Next #=Tag /=Line X=ClearMI ?=Help Ctrl-Q=Quit"
         )
         print(divider_line)
 
         key = get_key()
         if key == "\x11":
             break
+        if key == "X":
+            if CACHE_DIR.exists():
+                shutil.rmtree(CACHE_DIR)
+                print(f"\n{COLOR_YELLOW}MediaInfo cache cleared.{COLOR_RESET}")
+                time.sleep(1.0)
+            continue
         if key == "?":
             print("Modes: i=info, p=pause/resume, d=delete, c=category, t=tags, v=verify, A=add public trackers (non-private), Q=qc-tag-media, l=list files, m=mediainfo")
             print("Paging: ] next page, [ previous page")
@@ -1301,7 +1314,7 @@ def main() -> int:
             print("Sort: s=cycle field, S=toggle asc/desc  Columns: T=toggle tags, D=toggle added, H=toggle hash width")
             print("Filters: f=text, C=category, #=tag (comma=OR, plus=AND, !NOT, ()group), /=line, F=manage stack, P=presets")
             print("Filter examples: text=anime cat=tv tag=ab+cross | text=!silo cat=- tag=(ab,cross)+!z")
-            print("MediaInfo: m=mode, M=toggle inline summary")
+            print("MediaInfo: m=mode, M=toggle inline summary, X=clear cache")
             print("Quit: Ctrl-Q")
             print("Press any key to continue...", end="", flush=True)
             _ = get_key()
