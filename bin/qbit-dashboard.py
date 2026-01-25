@@ -31,7 +31,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 LAST_UPDATED = "2026-01-21"
 
 COLOR_CYAN = "\033[36m"
@@ -437,9 +437,9 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
 
     target = get_largest_media_file(content_path)
     if not target:
-        summary = "No media content."
-        cache_file.write_text(summary)
-        return summary
+        mi_summary = "No media content."
+        cache_file.write_text(mi_summary)
+        return mi_summary
 
     tool = shutil.which("mediainfo")
     if not tool:
@@ -454,17 +454,17 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
         text=True,
     )
     
-    summary = (result.stdout or "").strip()
-    if not summary:
-        summary = "MediaInfo extraction failed."
+    mi_summary = (result.stdout or "").strip()
+    if not mi_summary:
+        mi_summary = "MediaInfo extraction failed."
     
     # Clean up and normalize
-    summary = summary.replace("][", "] [").replace("  ", " ").strip()
-    if summary.startswith("|"):
-        summary = summary[1:].strip()
+    mi_summary = mi_summary.replace("][", "] [").replace("  ", " ").strip()
+    if mi_summary.startswith("|"):
+        mi_summary = mi_summary[1:].strip()
     
-    cache_file.write_text(summary)
-    return summary
+    cache_file.write_text(mi_summary)
+    return mi_summary
 
 
 def get_mediainfo_for_hash(hash_value: str, content_path: str) -> str:
@@ -1188,7 +1188,7 @@ def main() -> int:
                 print("\nDone.")
 
         os.system("clear")
-        print(f"{COLOR_DEFAULT}{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI){COLOR_RESET}")
+        print(f"{COLOR_DEFAULT}{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{COLOR_RESET}")
         print(f"API: {api_url}")
         print(f"Summary: {summary(torrents)}")
         print("")
@@ -1247,9 +1247,9 @@ def main() -> int:
                     name = raw.get("name") or ""
                     content_path = str(Path(save_path) / name) if save_path and name else ""
                 
-                summary = get_mediainfo_summary(item.get("hash"), content_path)
+                mi_summary = get_mediainfo_summary(item.get("hash"), content_path)
                 indent = "     "
-                print(f"{indent}{COLOR_GREY}{summary}{COLOR_RESET}")
+                print(f"{indent}{COLOR_GREY}{mi_summary}{COLOR_RESET}")
 
             if show_tags:
                 tags_raw = str(item.get("tags") or "").strip()
