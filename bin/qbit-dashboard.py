@@ -31,7 +31,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 LAST_UPDATED = "2026-01-21"
 
 COLOR_CYAN = "\033[36m"
@@ -443,7 +443,10 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
     cache_file = CACHE_DIR / f"{hash_value}.summary"
 
     if cache_file.exists():
-        return cache_file.read_text().strip()
+        val = cache_file.read_text().strip()
+        # Invalidate cache if it contains an error message from a previous version
+        if val and "extraction failed" not in val and "returned no data" not in val:
+            return val
 
     target = get_largest_media_file(content_path)
     if not target:
@@ -455,35 +458,41 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
     if not tool:
         return "ERROR: mediainfo not found"
 
-    # Concise summary format: Video tracks info | Audio tracks info | Fallback to General Format
-    # We use a newline to separate parts and then process it.
-    inform = "Video;[%Width%x%Height%] [%Format%] [%BitRate/String%]\nAudio;[%Format%] [%Channel(s)%ch]\nGeneral;%Format%"
+    # We fetch General, Video, and Audio info separately to ensure we get something
+    # for all file types (mp3, m4b, mkv, etc).
+    # Template: [Format] [WidthxHeight] [VideoCodec] [BitRate] [AudioCodec] [Channels]
     
-    result = subprocess.run(
-        [tool, f"--Inform={inform}", str(target)],
-        capture_output=True,
-        text=True,
-    )
+    # Video template
+    v_info = subprocess.run(
+        [tool, "--Inform=Video;%Width%x%Height% %Format% %BitRate/String%", str(target)],
+        capture_output=True, text=True
+    ).stdout.strip()
     
-    output = (result.stdout or "").strip()
-    if not output:
-        mi_summary = "MediaInfo returned no data."
-    else:
-        # Mediainfo with newline templates can produce multiple lines.
-        # We want a single line summary.
-        lines = [line.strip() for line in output.splitlines() if line.strip()]
-        # If we have Video or Audio lines (lines containing '['), use those.
-        # Otherwise use the last line (General Format).
-        va_lines = [l for l in lines if "[" in l]
-        if va_lines:
-            mi_summary = " ".join(va_lines)
-        elif lines:
-            mi_summary = lines[-1]
-        else:
-            mi_summary = "Unknown format"
+    # Audio template
+    a_info = subprocess.run(
+        [tool, "--Inform=Audio;%Format% %Channel(s)%ch", str(target)],
+        capture_output=True, text=True
+    ).stdout.strip()
+    
+    # General template (fallback)
+    g_info = subprocess.run(
+        [tool, "--Inform=General;%Format%", str(target)],
+        capture_output=True, text=True
+    ).stdout.strip()
+
+    parts = []
+    if v_info:
+        parts.append(f"[{v_info}]")
+    if a_info:
+        parts.append(f"[{a_info}]")
+    
+    if not parts and g_info:
+        parts.append(f"[{g_info}]")
+    
+    mi_summary = " ".join(parts) if parts else "MediaInfo extraction failed."
     
     # Clean up and normalize
-    mi_summary = mi_summary.replace("][", "] [").replace("  ", " ").strip()
+    mi_summary = mi_summary.replace("  ", " ").strip()
     
     cache_file.write_text(mi_summary)
     return mi_summary
