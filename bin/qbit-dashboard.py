@@ -62,7 +62,7 @@ QC_LOG_DIR = Path.home() / ".logs" / "media_qc"
 
 STATE_DOWNLOAD = {"downloading", "stalledDL", "queuedDL", "forcedDL", "metaDL"}
 STATE_UPLOAD = {"uploading", "stalledUP", "queuedUP", "forcedUP"}
-STATE_PAUSED = {"pausedDL", "pausedUP"}
+STATE_PAUSED = {"pausedDL", "pausedUP", "stoppedDL", "stoppedUP"}
 STATE_ERROR = {"error", "missingFiles"}
 STATE_CHECKING = {"checkingUP", "checkingDL", "checkingResumeData", "checking"}
 STATE_COMPLETED = {"completed"}
@@ -76,6 +76,7 @@ STATE_CODE = {
     "pausedDL": "PD",
     "queuedDL": "QD",
     "stalledDL": "SD",
+    "stoppedDL": "PD",
     "error": "E",
     "missingFiles": "MF",
     "uploading": "U",
@@ -84,6 +85,7 @@ STATE_CODE = {
     "pausedUP": "PU",
     "queuedUP": "QU",
     "stalledUP": "SU",
+    "stoppedUP": "PU",
     "queuedForChecking": "QC",
     "checkingResumeData": "CR",
     "moving": "MV",
@@ -811,19 +813,24 @@ def apply_action(opener: urllib.request.OpenerDirector, api_url: str, mode: str,
     raw = item.get("raw", {})
 
     if mode == "p":
-        action = "resume" if "paused" in state.lower() else "pause"
-        qbit_request(opener, api_url, "POST", f"/api/v2/torrents/{action}", {"hashes": hash_value})
-        return "OK"
+        is_paused = "paused" in state.lower() or "stopped" in state.lower()
+        action = "start" if is_paused else "stop"
+        resp = qbit_request(opener, api_url, "POST", f"/api/v2/torrents/{action}", {"hashes": hash_value})
+        # Try fallbacks for older versions if start/stop 404
+        if "HTTP 404" in resp:
+            old_action = "resume" if is_paused else "pause"
+            resp = qbit_request(opener, api_url, "POST", f"/api/v2/torrents/{old_action}", {"hashes": hash_value})
+        return "OK" if resp in ("Ok.", "") else resp
     if mode == "d":
         delete_files = read_line("Delete files too? (y/N): ").strip().lower() == "y"
-        qbit_request(opener, api_url, "POST", "/api/v2/torrents/delete", {"hashes": hash_value, "deleteFiles": "true" if delete_files else "false"})
-        return "OK"
+        resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/delete", {"hashes": hash_value, "deleteFiles": "true" if delete_files else "false"})
+        return "OK" if resp in ("Ok.", "") else resp
     if mode == "c":
         value = read_line("Enter new category (blank cancels): ").strip()
         if not value:
             return "Cancelled"
-        qbit_request(opener, api_url, "POST", "/api/v2/torrents/setCategory", {"hashes": hash_value, "category": value})
-        return "OK"
+        resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/setCategory", {"hashes": hash_value, "category": value})
+        return "OK" if resp in ("Ok.", "") else resp
     if mode == "t":
         existing_tags = (item.get("tags") or "").strip()
         if existing_tags:
@@ -835,19 +842,19 @@ def apply_action(opener: urllib.request.OpenerDirector, api_url: str, mode: str,
             existing = (item.get("tags") or "").strip()
             if not existing:
                 return "No tags to clear"
-            qbit_request(opener, api_url, "POST", "/api/v2/torrents/removeTags", {"hashes": hash_value, "tags": existing})
-            return "OK"
+            resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/removeTags", {"hashes": hash_value, "tags": existing})
+            return "OK" if resp in ("Ok.", "") else resp
         if value.startswith("-"):
             tags = value[1:].strip()
             if not tags:
                 return "Cancelled"
-            qbit_request(opener, api_url, "POST", "/api/v2/torrents/removeTags", {"hashes": hash_value, "tags": tags})
-            return "OK"
-        qbit_request(opener, api_url, "POST", "/api/v2/torrents/addTags", {"hashes": hash_value, "tags": value})
-        return "OK"
+            resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/removeTags", {"hashes": hash_value, "tags": tags})
+            return "OK" if resp in ("Ok.", "") else resp
+        resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/addTags", {"hashes": hash_value, "tags": value})
+        return "OK" if resp in ("Ok.", "") else resp
     if mode == "v":
-        qbit_request(opener, api_url, "POST", "/api/v2/torrents/recheck", {"hashes": hash_value})
-        return "OK"
+        resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/recheck", {"hashes": hash_value})
+        return "OK" if resp in ("Ok.", "") else resp
     if mode == "A":
         priv = raw.get("private")
         if priv is None:
