@@ -61,6 +61,19 @@ TRACKERS_LIST_URL = "https://raw.githubusercontent.com/ngosang/trackerslist/mast
 QC_TAG_TOOL = Path(__file__).resolve().parent / "media_qc_tag.py"
 QC_LOG_DIR = Path.home() / ".logs" / "media_qc"
 
+MEDIA_EXTS = {
+    # Video
+    ".3g2", ".3gp", ".asf", ".asx", ".avi", ".divx", ".f4v", ".flv", ".m2p", ".m2ts",
+    ".m2v", ".m4v", ".mjp", ".mkv", ".mov", ".mp4", ".mpe", ".mpeg", ".mpg", ".mts",
+    ".ogm", ".ogv", ".qt", ".rm", ".rmvb", ".swf", ".ts", ".vob", ".webm", ".wmv",
+    ".xvid",
+    # Audio
+    ".aa3", ".aac", ".ac3", ".acm", ".adts", ".aif", ".aifc", ".aiff", ".amr", ".ape",
+    ".au", ".caf", ".dts", ".flac", ".fla", ".m4a", ".m4b", ".m4p", ".mid", ".mka",
+    ".mod", ".mp2", ".mp3", ".mp4", ".mpc", ".oga", ".ogg", ".opus", ".ra", ".ram",
+    ".wav", ".wma", ".wv"
+}
+
 STATE_DOWNLOAD = {"downloading", "stalledDL", "queuedDL", "forcedDL", "metaDL"}
 STATE_UPLOAD = {"uploading", "stalledUP", "queuedUP", "forcedUP"}
 STATE_PAUSED = {"pausedDL", "pausedUP", "stoppedDL", "stoppedUP"}
@@ -405,16 +418,13 @@ def get_largest_media_file(content_path: str) -> Optional[Path]:
     if not path.exists():
         return None
     
-    exts = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".m2ts", ".mpg", ".mpeg", ".webm", ".wmv",
-            ".mp3", ".m4b", ".m4a", ".flac", ".aac", ".ogg", ".wav"}
-    
     files = []
     if path.is_file():
-        if path.suffix.lower() in exts:
+        if path.suffix.lower() in MEDIA_EXTS:
             files.append(path)
     else:
         for item_path in path.rglob("*"):
-            if item_path.is_file() and item_path.suffix.lower() in exts:
+            if item_path.is_file() and item_path.suffix.lower() in MEDIA_EXTS:
                 files.append(item_path)
     
     if not files:
@@ -445,8 +455,9 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
     if not tool:
         return "ERROR: mediainfo not found"
 
-    # Concise summary format: Resolution | VideoCodec | BitRate | AudioCodec | Channels
-    inform = "Video;[%Width%x%Height%] [%Format%] [%BitRate/String%]|Audio; [%Format%] [%Channel(s)%ch]"
+    # Concise summary format: Video tracks info | Audio tracks info | Fallback to General Format
+    # We use a newline to separate parts and then process it.
+    inform = "Video;[%Width%x%Height%] [%Format%] [%BitRate/String%]\nAudio;[%Format%] [%Channel(s)%ch]\nGeneral;%Format%"
     
     result = subprocess.run(
         [tool, f"--Inform={inform}", str(target)],
@@ -454,14 +465,25 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
         text=True,
     )
     
-    mi_summary = (result.stdout or "").strip()
-    if not mi_summary:
-        mi_summary = "MediaInfo extraction failed."
+    output = (result.stdout or "").strip()
+    if not output:
+        mi_summary = "MediaInfo returned no data."
+    else:
+        # Mediainfo with newline templates can produce multiple lines.
+        # We want a single line summary.
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        # If we have Video or Audio lines (lines containing '['), use those.
+        # Otherwise use the last line (General Format).
+        va_lines = [l for l in lines if "[" in l]
+        if va_lines:
+            mi_summary = " ".join(va_lines)
+        elif lines:
+            mi_summary = lines[-1]
+        else:
+            mi_summary = "Unknown format"
     
     # Clean up and normalize
     mi_summary = mi_summary.replace("][", "] [").replace("  ", " ").strip()
-    if mi_summary.startswith("|"):
-        mi_summary = mi_summary[1:].strip()
     
     cache_file.write_text(mi_summary)
     return mi_summary
@@ -487,10 +509,8 @@ def get_mediainfo_for_hash(hash_value: str, content_path: str) -> str:
     if path.is_file():
         files = [path]
     else:
-        exts = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".m2ts", ".mpg", ".mpeg", ".webm", ".wmv",
-                ".mp3", ".m4b", ".m4a", ".flac", ".aac", ".ogg", ".wav"}
         for item_path in sorted(path.rglob("*")):
-            if item_path.is_file() and item_path.suffix.lower() in exts:
+            if item_path.is_file() and item_path.suffix.lower() in MEDIA_EXTS:
                 files.append(item_path)
     
     if not files:
