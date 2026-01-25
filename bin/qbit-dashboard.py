@@ -1185,13 +1185,13 @@ def main() -> int:
         print(format_filters_line(filters))
         print(divider_line)
         print(
-            "Keys: 0-9=Apply  r=Refresh  V=View  f=Filter  a=All  w=Down  u=Up  z=Paused  e=Done  g=Err  s=Sort  [D]=Added  [H]=Hash  [m]=MediaInfo"
+            "Keys: r=Refresh f=Filter a=All w=Down u=Up z=Paused e=Done g=Err s=Sort [i/p/d/c/t/v/l/m]=Modes"
         )
         print(
-            "Keys: 0-9=Apply  r=Refresh  V=View  f=Filter  a=All  w=Down  u=Up  z=Paused  e=Done  g=Err  s=Sort  [D]=Added  [H]=Hash  [M]=BatchMI"
+            "      V=View F=Filters P=Presets S=Dir D=Added H=Hash T=Tags C=Cat M=BatchMI [A/Q]=Modes R=Raw"
         )
         print(
-            "      [C]=Cat  [#]=Tag  [/]Line  F=Filters  P=Presets  S=Dir  [T]=Tags  [=Prev ]=Next  i/p/d/c/t/v/A/Q/l/m=Mode  R=Raw  ?=Help  Ctrl-Q=Quit"
+            "      0-9=Apply [=Prev ]=Next #=Tag /=Line ?=Help Ctrl-Q=Quit"
         )
         print(divider_line)
 
