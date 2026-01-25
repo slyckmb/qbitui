@@ -23,6 +23,7 @@ except Exception:  # pragma: no cover - optional dependency
     ZoneInfo = None
 from pathlib import Path
 from http.cookiejar import CookieJar
+from typing import Optional
 
 try:
     import yaml  # type: ignore
@@ -313,7 +314,7 @@ def mode_color(mode: str) -> str:
     return colors.get(mode, COLOR_RESET)
 
 
-ANSI_RE = re.compile(r"\x1b\\[[0-9;]*m")
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def visible_len(value: str) -> int:
@@ -498,26 +499,6 @@ def get_mediainfo_for_hash(hash_value: str, content_path: str) -> str:
     table = mediainfo_table(files)
     cache_file.write_text(table)
     return table
-
-
-def print_mediainfo_batch(page_rows: list[dict]) -> None:
-    print(f"{COLOR_BOLD}MediaInfo Batch View (Current Page){COLOR_RESET}")
-    print("-" * terminal_width())
-    for idx, item in enumerate(page_rows):
-        raw = item.get("raw") or {}
-        content_path = raw.get("content_path")
-        if not content_path:
-            save_path = raw.get("save_path") or ""
-            name = raw.get("name") or ""
-            content_path = str(Path(save_path) / name) if save_path and name else ""
-        
-        info = get_mediainfo_for_hash(item.get("hash"), content_path)
-        print(f"[{idx}] {COLOR_CYAN}{item.get('name')}{COLOR_RESET}")
-        print(info)
-        print("-" * terminal_width())
-    
-    print("\nPress any key to continue...", end="", flush=True)
-    _ = get_key()
 
 
 def mediainfo_table(paths: list[Path]) -> str:
@@ -1316,10 +1297,6 @@ def main() -> int:
             continue
         if key == "M":
             show_mediainfo_inline = not show_mediainfo_inline
-            continue
-        if key == "V":
-            print("Press any key to continue...", end="", flush=True)
-            _ = get_key()
             continue
         if key == "V":
             mode = "i"
