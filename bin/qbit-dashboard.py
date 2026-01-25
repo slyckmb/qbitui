@@ -31,7 +31,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 LAST_UPDATED = "2026-01-21"
 
 COLOR_CYAN = "\033[36m"
@@ -458,41 +458,23 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
     if not tool:
         return "ERROR: mediainfo not found"
 
-    # We fetch General, Video, and Audio info separately to ensure we get something
-    # for all file types (mp3, m4b, mkv, etc).
-    # Template: [Format] [WidthxHeight] [VideoCodec] [BitRate] [AudioCodec] [Channels]
+    # Template: Resolution Format BitRate | AudioFormat Channels | GeneralFormat
+    inform = "Video;%Width%x%Height% %Format% %BitRate/String%|Audio;| %Format% %Channel(s)%ch|General;| %Format%"
     
-    # Video template
-    v_info = subprocess.run(
-        [tool, "--Inform=Video;%Width%x%Height% %Format% %BitRate/String%", str(target)],
-        capture_output=True, text=True
-    ).stdout.strip()
+    result = subprocess.run(
+        [tool, f"--Inform={inform}", str(target)],
+        capture_output=True,
+        text=True,
+    )
     
-    # Audio template
-    a_info = subprocess.run(
-        [tool, "--Inform=Audio;%Format% %Channel(s)%ch", str(target)],
-        capture_output=True, text=True
-    ).stdout.strip()
-    
-    # General template (fallback)
-    g_info = subprocess.run(
-        [tool, "--Inform=General;%Format%", str(target)],
-        capture_output=True, text=True
-    ).stdout.strip()
-
-    parts = []
-    if v_info:
-        parts.append(f"[{v_info}]")
-    if a_info:
-        parts.append(f"[{a_info}]")
-    
-    if not parts and g_info:
-        parts.append(f"[{g_info}]")
-    
-    mi_summary = " ".join(parts) if parts else "MediaInfo extraction failed."
+    mi_summary = (result.stdout or "").strip()
+    if not mi_summary:
+        mi_summary = "MediaInfo extraction failed."
     
     # Clean up and normalize
     mi_summary = mi_summary.replace("  ", " ").strip()
+    if mi_summary.startswith("|"):
+        mi_summary = mi_summary[1:].strip()
     
     cache_file.write_text(mi_summary)
     return mi_summary
