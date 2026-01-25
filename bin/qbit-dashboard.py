@@ -308,6 +308,7 @@ def mode_color(mode: str) -> str:
         "A": COLOR_BRIGHT_GREEN,
         "Q": COLOR_BRIGHT_PURPLE,
         "l": COLOR_BRIGHT_WHITE,
+        "m": COLOR_MAGENTA,
     }
     return colors.get(mode, COLOR_RESET)
 
@@ -391,6 +392,63 @@ def truncate(value: str, max_len: int) -> str:
     if max_len <= 3:
         return value[:max_len]
     return value[: max_len - 3] + "..."
+
+
+CACHE_DIR = Path(__file__).parent.parent / "cache" / "mediainfo"
+
+
+def get_mediainfo_for_hash(hash_value: str, content_path: str) -> str:
+    if not hash_value:
+        return "ERROR: Missing hash"
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file = CACHE_DIR / f"{hash_value}.txt"
+
+    if cache_file.exists():
+        return cache_file.read_text()
+
+    if not content_path:
+        return "ERROR: No content path"
+    
+    path = Path(content_path)
+    if not path.exists():
+        return f"ERROR: Path not found ({path})"
+
+    files = []
+    if path.is_file():
+        files = [path]
+    else:
+        exts = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".m2ts", ".mpg", ".mpeg", ".webm", ".wmv",
+                ".mp3", ".m4b", ".m4a", ".flac", ".aac", ".ogg", ".wav"}
+        for item_path in sorted(path.rglob("*")):
+            if item_path.is_file() and item_path.suffix.lower() in exts:
+                files.append(item_path)
+    
+    if not files:
+        return "ERROR: No media files found"
+
+    table = mediainfo_table(files)
+    cache_file.write_text(table)
+    return table
+
+
+def print_mediainfo_batch(page_rows: list[dict]) -> None:
+    print(f"{COLOR_BOLD}MediaInfo Batch View (Current Page){COLOR_RESET}")
+    print("-" * terminal_width())
+    for idx, item in enumerate(page_rows):
+        raw = item.get("raw") or {}
+        content_path = raw.get("content_path")
+        if not content_path:
+            save_path = raw.get("save_path") or ""
+            name = raw.get("name") or ""
+            content_path = str(Path(save_path) / name) if save_path and name else ""
+        
+        info = get_mediainfo_for_hash(item.get("hash"), content_path)
+        print(f"[{idx}] {COLOR_CYAN}{item.get('name')}{COLOR_RESET}")
+        print(info)
+        print("-" * terminal_width())
+    
+    print("\nPress any key to continue...", end="", flush=True)
+    _ = get_key()
 
 
 def mediainfo_table(paths: list[Path]) -> str:
@@ -974,32 +1032,10 @@ def print_mediainfo(item: dict) -> None:
         save_path = raw.get("save_path") or ""
         name = raw.get("name") or ""
         content_path = str(Path(save_path) / name) if save_path and name else ""
-    if not content_path:
-        print("No content path available.")
-        print("Press any key to continue...", end="", flush=True)
-        _ = get_key()
-        return
-    path = Path(content_path)
-    if not path.exists():
-        print(f"Path not found: {path}")
-        print("Press any key to continue...", end="", flush=True)
-        _ = get_key()
-        return
-    files = []
-    if path.is_file():
-        files = [path]
-    else:
-        exts = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".m2ts", ".mpg", ".mpeg", ".webm", ".wmv",
-                ".mp3", ".m4b", ".m4a", ".flac", ".aac", ".ogg", ".wav"}
-        for item_path in sorted(path.rglob("*")):
-            if item_path.is_file() and item_path.suffix.lower() in exts:
-                files.append(item_path)
-    if not files:
-        print("No media files found for mediainfo.")
-        print("Press any key to continue...", end="", flush=True)
-        _ = get_key()
-        return
-    print(mediainfo_table(files))
+    
+    info = get_mediainfo_for_hash(item.get("hash"), content_path)
+    print(f"{COLOR_BOLD}MediaInfo for: {item.get('name')}{COLOR_RESET}")
+    print(info)
     print("")
     print("Press any key to continue...", end="", flush=True)
     _ = get_key()
@@ -1086,7 +1122,7 @@ def main() -> int:
         print("")
 
         scope_label = scope.upper()
-        mode_label = {"i": "INFO", "p": "PAUSE/RESUME", "d": "DELETE", "c": "CATEGORY", "t": "TAGS", "v": "VERIFY", "A": "ADD PUBLIC TRACKERS", "Q": "QC TAG MEDIA", "l": "LIST FILES"}[mode]
+        mode_label = {"i": "INFO", "p": "PAUSE/RESUME", "d": "DELETE", "c": "CATEGORY", "t": "TAGS", "v": "VERIFY", "A": "ADD PUBLIC TRACKERS", "Q": "QC TAG MEDIA", "l": "LIST FILES", "m": "MEDIAINFO"}[mode]
         page_label = f"Page {page + 1}/{total_pages}"
         sort_label = f"{sort_field} ({'desc' if sort_desc else 'asc'})"
         mode_col = mode_color(mode)
@@ -1152,7 +1188,10 @@ def main() -> int:
             "Keys: 0-9=Apply  r=Refresh  V=View  f=Filter  a=All  w=Down  u=Up  z=Paused  e=Done  g=Err  s=Sort  [D]=Added  [H]=Hash  [m]=MediaInfo"
         )
         print(
-            "      [C]=Cat  [#]=Tag  [/]Line  F=Filters  P=Presets  S=Dir  [T]=Tags  [=Prev ]=Next  i/p/d/c/t/v/A/Q/l=Mode  R=Raw  ?=Help  Ctrl-Q=Quit"
+            "Keys: 0-9=Apply  r=Refresh  V=View  f=Filter  a=All  w=Down  u=Up  z=Paused  e=Done  g=Err  s=Sort  [D]=Added  [H]=Hash  [M]=BatchMI"
+        )
+        print(
+            "      [C]=Cat  [#]=Tag  [/]Line  F=Filters  P=Presets  S=Dir  [T]=Tags  [=Prev ]=Next  i/p/d/c/t/v/A/Q/l/m=Mode  R=Raw  ?=Help  Ctrl-Q=Quit"
         )
         print(divider_line)
 
@@ -1160,14 +1199,22 @@ def main() -> int:
         if key == "\x11":
             break
         if key == "?":
-            print("Modes: i=info, p=pause/resume, d=delete, c=category, t=tags, v=verify, A=add public trackers (non-private), Q=qc-tag-media, l=list files")
+            print("Modes: i=info, p=pause/resume, d=delete, c=category, t=tags, v=verify, A=add public trackers (non-private), Q=qc-tag-media, l=list files, m=mediainfo")
             print("Paging: ] next page, [ previous page")
             print("Scope: a=all, w=downloading, u=uploading, z=paused, e=completed, g=error  Raw: R + item number")
             print("Sort: s=cycle field, S=toggle asc/desc  Columns: T=toggle tags, D=toggle added, H=toggle hash width")
             print("Filters: f=text, C=category, #=tag (comma=OR, plus=AND, !NOT, ()group), /=line, F=manage stack, P=presets")
             print("Filter examples: text=anime cat=tv tag=ab+cross | text=!silo cat=- tag=(ab,cross)+!z")
-            print("MediaInfo: m + item number")
+            print("MediaInfo: m=mode, M=batch view current page")
             print("Quit: Ctrl-Q")
+            print("Press any key to continue...", end="", flush=True)
+            _ = get_key()
+            continue
+        if key == "M":
+            print("")
+            print_mediainfo_batch(page_rows)
+            continue
+        if key == "V":
             print("Press any key to continue...", end="", flush=True)
             _ = get_key()
             continue
@@ -1323,7 +1370,7 @@ def main() -> int:
         if key == "H":
             show_full_hash = not show_full_hash
             continue
-        if key in "ipdctvAQl":
+        if key in "ipdctvAQlm":
             mode = key
             continue
         if key == "[":
@@ -1340,14 +1387,6 @@ def main() -> int:
                     print("")
                     print_raw(page_rows[idx])
             continue
-        if key == "m":
-            mi_choice = read_line("\nMediaInfo item number (blank cancels): ").strip()
-            if mi_choice.isdigit():
-                idx = int(mi_choice)
-                if 0 <= idx < len(page_rows):
-                    print("")
-                    print_mediainfo(page_rows[idx])
-            continue
         if key and key.isdigit():
             idx = int(key)
             if 0 <= idx < len(page_rows):
@@ -1358,6 +1397,9 @@ def main() -> int:
                 elif mode == "l":
                     print("")
                     print_files(opener, api_url, item)
+                elif mode == "m":
+                    print("")
+                    print_mediainfo(item)
                 else:
                     result = apply_action(opener, api_url, mode, item)
                     print(f"{mode_label}: {result}")
