@@ -307,6 +307,7 @@ def mode_color(mode: str) -> str:
         "v": COLOR_BRIGHT_BLUE,
         "A": COLOR_BRIGHT_GREEN,
         "Q": COLOR_BRIGHT_PURPLE,
+        "l": COLOR_BRIGHT_WHITE,
     }
     return colors.get(mode, COLOR_RESET)
 
@@ -880,6 +881,59 @@ def apply_action(opener: urllib.request.OpenerDirector, api_url: str, mode: str,
     return "Unknown mode"
 
 
+def print_files(opener: urllib.request.OpenerDirector, api_url: str, item: dict) -> None:
+    hash_value = item.get("hash")
+    if not hash_value:
+        print("Missing hash")
+        _ = get_key()
+        return
+
+    raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/files", {"hash": hash_value})
+    try:
+        files = json.loads(raw)
+    except Exception:
+        print(f"Failed to parse files: {raw}")
+        _ = get_key()
+        return
+
+    if not files:
+        print("No files found.")
+        _ = get_key()
+        return
+
+    print(f"{COLOR_BOLD}Files for: {item.get('name')}{COLOR_RESET}")
+    headers = ["Index", "Name", "Size", "Prog", "Priority"]
+    widths = [5, 60, 10, 6, 10]
+    
+    header_line = "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers))
+    print(header_line)
+    print("-" * len(header_line))
+
+    # Sort files by name
+    files.sort(key=lambda x: x.get("name", ""))
+    
+    priority_map = {0: "Do not DL", 1: "Normal", 2: "High", 6: "Max", 7: "Forced"}
+
+    for idx, f in enumerate(files):
+        name = truncate(f.get("name", ""), widths[1])
+        size = size_str(f.get("size", 0))
+        prog = f"{int(f.get('progress', 0) * 100)}%"
+        prio = priority_map.get(f.get("priority", 1), str(f.get("priority")))
+        
+        line = (
+            f"{str(idx):<5} "
+            f"{name:<60} "
+            f"{size:<10} "
+            f"{prog:<6} "
+            f"{prio:<10}"
+        )
+        print(line)
+
+    print("")
+    print("Press any key to continue...", end="", flush=True)
+    _ = get_key()
+
+
 def print_details(item: dict) -> None:
     raw = item.get("raw") or {}
     print(f"{COLOR_BOLD}Details{COLOR_RESET}")
@@ -1032,7 +1086,7 @@ def main() -> int:
         print("")
 
         scope_label = scope.upper()
-        mode_label = {"i": "INFO", "p": "PAUSE/RESUME", "d": "DELETE", "c": "CATEGORY", "t": "TAGS", "v": "VERIFY", "A": "ADD PUBLIC TRACKERS", "Q": "QC TAG MEDIA"}[mode]
+        mode_label = {"i": "INFO", "p": "PAUSE/RESUME", "d": "DELETE", "c": "CATEGORY", "t": "TAGS", "v": "VERIFY", "A": "ADD PUBLIC TRACKERS", "Q": "QC TAG MEDIA", "l": "LIST FILES"}[mode]
         page_label = f"Page {page + 1}/{total_pages}"
         sort_label = f"{sort_field} ({'desc' if sort_desc else 'asc'})"
         mode_col = mode_color(mode)
@@ -1098,7 +1152,7 @@ def main() -> int:
             "Keys: 0-9=Apply  r=Refresh  V=View  f=Filter  a=All  w=Down  u=Up  z=Paused  e=Done  g=Err  s=Sort  [D]=Added  [H]=Hash  [m]=MediaInfo"
         )
         print(
-            "      [C]=Cat  [#]=Tag  [/]Line  F=Filters  P=Presets  S=Dir  [T]=Tags  [=Prev ]=Next  i/p/d/c/t/v/A/Q=Mode  R=Raw  ?=Help  Ctrl-Q=Quit"
+            "      [C]=Cat  [#]=Tag  [/]Line  F=Filters  P=Presets  S=Dir  [T]=Tags  [=Prev ]=Next  i/p/d/c/t/v/A/Q/l=Mode  R=Raw  ?=Help  Ctrl-Q=Quit"
         )
         print(divider_line)
 
@@ -1106,7 +1160,7 @@ def main() -> int:
         if key == "\x11":
             break
         if key == "?":
-            print("Modes: i=info, p=pause/resume, d=delete, c=category, t=tags, v=verify, A=add public trackers (non-private), Q=qc-tag-media")
+            print("Modes: i=info, p=pause/resume, d=delete, c=category, t=tags, v=verify, A=add public trackers (non-private), Q=qc-tag-media, l=list files")
             print("Paging: ] next page, [ previous page")
             print("Scope: a=all, w=downloading, u=uploading, z=paused, e=completed, g=error  Raw: R + item number")
             print("Sort: s=cycle field, S=toggle asc/desc  Columns: T=toggle tags, D=toggle added, H=toggle hash width")
@@ -1269,7 +1323,7 @@ def main() -> int:
         if key == "H":
             show_full_hash = not show_full_hash
             continue
-        if key in "ipdctvAQ":
+        if key in "ipdctvAQl":
             mode = key
             continue
         if key == "[":
@@ -1301,6 +1355,9 @@ def main() -> int:
                 if mode == "i":
                     print("")
                     print_details(item)
+                elif mode == "l":
+                    print("")
+                    print_files(opener, api_url, item)
                 else:
                     result = apply_action(opener, api_url, mode, item)
                     print(f"{mode_label}: {result}")
