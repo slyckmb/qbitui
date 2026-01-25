@@ -397,6 +397,75 @@ def truncate(value: str, max_len: int) -> str:
 CACHE_DIR = Path(__file__).parent.parent / "cache" / "mediainfo"
 
 
+def get_largest_media_file(content_path: str) -> Optional[Path]:
+    if not content_path:
+        return None
+    path = Path(content_path)
+    if not path.exists():
+        return None
+    
+    exts = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".m2ts", ".mpg", ".mpeg", ".webm", ".wmv",
+            ".mp3", ".m4b", ".m4a", ".flac", ".aac", ".ogg", ".wav"}
+    
+    files = []
+    if path.is_file():
+        if path.suffix.lower() in exts:
+            files.append(path)
+    else:
+        for item_path in path.rglob("*"):
+            if item_path.is_file() and item_path.suffix.lower() in exts:
+                files.append(item_path)
+    
+    if not files:
+        return None
+    
+    # Sort by size descending
+    files.sort(key=lambda x: x.stat().st_size, reverse=True)
+    return files[0]
+
+
+def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
+    if not hash_value:
+        return "ERROR: Missing hash"
+    
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file = CACHE_DIR / f"{hash_value}.summary"
+
+    if cache_file.exists():
+        return cache_file.read_text().strip()
+
+    target = get_largest_media_file(content_path)
+    if not target:
+        summary = "No media content."
+        cache_file.write_text(summary)
+        return summary
+
+    tool = shutil.which("mediainfo")
+    if not tool:
+        return "ERROR: mediainfo not found"
+
+    # Concise summary format: Resolution | VideoCodec | BitRate | AudioCodec | Channels
+    inform = "Video;[%Width%x%Height%] [%Format%] [%BitRate/String%]|Audio; [%Format%] [%Channel(s)%ch]"
+    
+    result = subprocess.run(
+        [tool, f"--Inform={inform}", str(target)],
+        capture_output=True,
+        text=True,
+    )
+    
+    summary = (result.stdout or "").strip()
+    if not summary:
+        summary = "MediaInfo extraction failed."
+    
+    # Clean up and normalize
+    summary = summary.replace("][", "] [").replace("  ", " ").strip()
+    if summary.startswith("|"):
+        summary = summary[1:].strip()
+    
+    cache_file.write_text(summary)
+    return summary
+
+
 def get_mediainfo_for_hash(hash_value: str, content_path: str) -> str:
     if not hash_value:
         return "ERROR: Missing hash"
@@ -1073,6 +1142,7 @@ def main() -> int:
     sort_index = 0
     sort_desc = True
     show_tags = False
+    show_mediainfo_inline = False
     show_full_hash = False
     show_added = True
 
@@ -1114,6 +1184,27 @@ def main() -> int:
             return row.get("name", "")
         rows.sort(key=sort_key, reverse=sort_desc)
         page_rows, total_pages, page = format_rows(rows, page, args.page_size)
+
+        # Pre-populate MediaInfo cache if toggle is on
+        if show_mediainfo_inline:
+            to_fetch = []
+            for r in page_rows:
+                if not (CACHE_DIR / f"{r['hash']}.summary").exists():
+                    to_fetch.append(r)
+            
+            if to_fetch:
+                print(f"{COLOR_YELLOW}Populating MediaInfo cache for {len(to_fetch)} items...{COLOR_RESET}")
+                for idx, r in enumerate(to_fetch, 1):
+                    raw = r.get("raw") or {}
+                    content_path = raw.get("content_path")
+                    if not content_path:
+                        save_path = raw.get("save_path") or ""
+                        name = raw.get("name") or ""
+                        content_path = str(Path(save_path) / name) if save_path and name else ""
+                    
+                    print(f"  [{idx}/{len(to_fetch)}] {truncate(r['name'], 60)}...", end="\r", flush=True)
+                    get_mediainfo_summary(r['hash'], content_path)
+                print("\nDone.")
 
         os.system("clear")
         print(f"{COLOR_DEFAULT}{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI){COLOR_RESET}")
@@ -1166,6 +1257,19 @@ def main() -> int:
             hash_value = str(item.get("hash") or "")
             hash_display = hash_value if show_full_hash else hash_value[:6] or "-"
             print(f"{base_line}{hash_display:<{hash_width}}")
+
+            if show_mediainfo_inline:
+                raw = item.get("raw") or {}
+                content_path = raw.get("content_path")
+                if not content_path:
+                    save_path = raw.get("save_path") or ""
+                    name = raw.get("name") or ""
+                    content_path = str(Path(save_path) / name) if save_path and name else ""
+                
+                summary = get_mediainfo_summary(item.get("hash"), content_path)
+                indent = "     "
+                print(f"{indent}{COLOR_GREY}{summary}{COLOR_RESET}")
+
             if show_tags:
                 tags_raw = str(item.get("tags") or "").strip()
                 if tags_raw:
@@ -1188,7 +1292,7 @@ def main() -> int:
             "Keys: r=Refresh f=Filter a=All w=Down u=Up z=Paused e=Done g=Err s=Sort [i/p/d/c/t/v/l/m]=Modes"
         )
         print(
-            "      V=View F=Filters P=Presets S=Dir D=Added H=Hash T=Tags C=Cat M=BatchMI [A/Q]=Modes R=Raw"
+            "      V=View F=Filters P=Presets S=Dir D=Added H=Hash T=Tags C=Cat M=MediaInfo [A/Q]=Modes R=Raw"
         )
         print(
             "      0-9=Apply [=Prev ]=Next #=Tag /=Line ?=Help Ctrl-Q=Quit"
@@ -1205,14 +1309,13 @@ def main() -> int:
             print("Sort: s=cycle field, S=toggle asc/desc  Columns: T=toggle tags, D=toggle added, H=toggle hash width")
             print("Filters: f=text, C=category, #=tag (comma=OR, plus=AND, !NOT, ()group), /=line, F=manage stack, P=presets")
             print("Filter examples: text=anime cat=tv tag=ab+cross | text=!silo cat=- tag=(ab,cross)+!z")
-            print("MediaInfo: m=mode, M=batch view current page")
+            print("MediaInfo: m=mode, M=toggle inline summary")
             print("Quit: Ctrl-Q")
             print("Press any key to continue...", end="", flush=True)
             _ = get_key()
             continue
         if key == "M":
-            print("")
-            print_mediainfo_batch(page_rows)
+            show_mediainfo_inline = not show_mediainfo_inline
             continue
         if key == "V":
             print("Press any key to continue...", end="", flush=True)
