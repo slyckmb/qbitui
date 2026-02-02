@@ -7,6 +7,7 @@ import shlex
 import select
 import shutil
 import sys
+import signal
 import readline  # Enables line editing for input()
 import re
 import subprocess
@@ -31,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 LAST_UPDATED = "2026-02-02"
 
 COLOR_CYAN = "\033[36m"
@@ -143,53 +144,60 @@ STATE_CODE = {
 
 
 STASHED_KEY = ""
+NEED_RESIZE = False
 
+def handle_winch(signum, frame):
+    global NEED_RESIZE
+    NEED_RESIZE = True
 
-def get_key() -> str:
-    """Get single keypress."""
-    global STASHED_KEY
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        if STASHED_KEY:
-            ch = STASHED_KEY
-            STASHED_KEY = ""
-            return ch
-        def read_with_timeout(timeout: float) -> str:
-            start = time.monotonic()
-            while time.monotonic() - start < timeout:
-                if select.select([sys.stdin], [], [], 0.02)[0]:
-                    return sys.stdin.read(1)
-            return ""
-
+def read_input_queue() -> list[str]:
+    """Read all pending input and return a list of mapped keys."""
+    keys = []
+    while True:
+        # Non-blocking check for input
+        r, _, _ = select.select([sys.stdin], [], [], 0)
+        if not r:
+            break
+            
         ch = sys.stdin.read(1)
         if ch == "\x1b":
-            nxt = read_with_timeout(0.3)
-            if not nxt:
-                return "ESC"
-            if nxt == "[":
-                seq = ""
-                while True:
-                    part = read_with_timeout(0.15)
-                    if not part:
+            # Peek for sequence
+            seq = ""
+            start = time.monotonic()
+            while (time.monotonic() - start) < 0.15:
+                if select.select([sys.stdin], [], [], 0.02)[0]:
+                    c = sys.stdin.read(1)
+                    seq += c
+                    if seq.endswith(("A", "B", "C", "D", "H", "F", "Z", "~")):
                         break
-                    seq += part
-                    if seq.endswith(("A", "B", "C", "D", "I", "Z")):
+                    if len(seq) > 1 and seq[-1].isalpha() and seq[-1] not in "O[": 
+                         # Catch-all for other terminators
                         break
-                    if len(seq) >= 6:
-                        break
-                if seq and seq[-1] in "ABCD":
-                    return ""
-                if seq.startswith("1;5") and seq.endswith(("I", "Z")):
-                    return "CTRL_TAB"
-                if seq.startswith("1;6") and seq.endswith(("I", "Z")):
-                    return "CTRL_TAB"
-                return ""
-            return ""
-        return ch
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                else:
+                    # No more data currently available
+                    break
+            
+            if not seq:
+                keys.append("ESC")
+            elif seq == "[Z":
+                keys.append("SHIFT_TAB")
+            elif seq.startswith("[1;5") or seq.startswith("[1;6"):
+                if seq.endswith("I") or seq.endswith("Z"):
+                    keys.append("CTRL_TAB")
+            elif seq in ("[A", "[B", "[C", "[D"):
+                # Arrows are intentionally ignored per requirements
+                pass
+            # We intentionally consume and drop other sequences (arrows, etc) to prevent leaking
+        else:
+            keys.append(ch)
+    return keys
+
+def get_key() -> str:
+    # Deprecated compatibility wrapper if needed, but we will remove calls to it
+    # For read_line, it expects to call input(), so we don't need this.
+    # We'll leave a dummy or remove it.
+    return ""
+
 
 
 def read_line(prompt: str) -> str:
@@ -548,10 +556,12 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
     return mi_summary
 
 
-def get_mediainfo_summary_cached(hash_value: str, content_path: str) -> str:
+def get_mediainfo_summary_cached(hash_value: str, content_path: str, background_only: bool = False) -> str:
     cache_file = CACHE_DIR / f"{hash_value}.summary"
     if cache_file.exists():
         return cache_file.read_text().strip()
+    if background_only:
+        return "MI: loading..."
     return get_mediainfo_summary(hash_value, content_path)
 
 
@@ -1100,30 +1110,31 @@ def apply_action(opener: urllib.request.OpenerDirector, api_url: str, action: st
 def print_files(opener: urllib.request.OpenerDirector, api_url: str, item: dict) -> None:
     hash_value = item.get("hash")
     if not hash_value:
-        print("Missing hash")
-        _ = get_key()
+        tui_print("Missing hash")
+        read_input_queue()
         return
 
     raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/files", {"hash": hash_value})
     try:
         files = json.loads(raw)
     except Exception:
-        print(f"Failed to parse files: {raw}")
-        _ = get_key()
+        tui_print(f"Failed to parse files: {raw}")
+        read_input_queue()
         return
 
     if not files:
-        print("No files found.")
-        _ = get_key()
+        tui_print("No files found.")
+        read_input_queue()
         return
 
-    print(f"{COLOR_BOLD}Files for: {item.get('name')}{COLOR_RESET}")
+    sys.stdout.write("\033[H\033[J")
+    tui_print(f"{COLOR_BOLD}Files for: {item.get('name')}{COLOR_RESET}")
     headers = ["Index", "Name", "Size", "Prog", "Priority"]
     widths = [5, 60, 10, 6, 10]
     
     header_line = "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers))
-    print(header_line)
-    print("-" * len(header_line))
+    tui_print(header_line)
+    tui_print("-" * len(header_line))
 
     # Sort files by name
     files.sort(key=lambda x: x.get("name", ""))
@@ -1143,35 +1154,41 @@ def print_files(opener: urllib.request.OpenerDirector, api_url: str, item: dict)
             f"{prog:<6} "
             f"{prio:<10}"
         )
-        print(line)
+        tui_print(line)
 
-    print("")
-    print("Press any key to continue...", end="", flush=True)
-    _ = get_key()
+    tui_print("")
+    tui_print("Press any key to continue...", end="")
+    sys.stdout.flush()
+    # Wait for key
+    select.select([sys.stdin], [], [], 10.0)
+    read_input_queue()
 
 
 def print_details(item: dict) -> None:
     raw = item.get("raw") or {}
-    print(f"{COLOR_BOLD}Details{COLOR_RESET}")
-    print(f"  Name: {item.get('name')}")
-    print(f"  State: {item.get('state')}")
-    print(f"  Category: {item.get('category')}")
-    print(f"  Tags: {item.get('tags')}")
-    print(f"  Size: {item.get('size')}")
-    print(f"  Progress: {item.get('progress')}")
-    print(f"  Ratio: {item.get('ratio')}")
-    print(f"  DL/UL: {item.get('dlspeed')} / {item.get('upspeed')}")
-    print(f"  ETA: {item.get('eta')}")
-    print(f"  Hash: {item.get('hash')}")
+    sys.stdout.write("\033[H\033[J")
+    tui_print(f"{COLOR_BOLD}Details{COLOR_RESET}")
+    tui_print(f"  Name: {item.get('name')}")
+    tui_print(f"  State: {item.get('state')}")
+    tui_print(f"  Category: {item.get('category')}")
+    tui_print(f"  Tags: {item.get('tags')}")
+    tui_print(f"  Size: {item.get('size')}")
+    tui_print(f"  Progress: {item.get('progress')}")
+    tui_print(f"  Ratio: {item.get('ratio')}")
+    tui_print(f"  DL/UL: {item.get('dlspeed')} / {item.get('upspeed')}")
+    tui_print(f"  ETA: {item.get('eta')}")
+    tui_print(f"  Hash: {item.get('hash')}")
     for key in ("save_path", "content_path", "tracker", "completion_on", "added_on", "last_activity", "state", "magnet_uri"):
         if key in raw:
             value = raw.get(key)
             if key.endswith("_on") and isinstance(value, (int, float)):
                 value = format_ts(value)
-            print(f"  {key}: {value}")
-    print("")
-    print("Press any key to continue...", end="", flush=True)
-    _ = get_key()
+            tui_print(f"  {key}: {value}")
+    tui_print("")
+    tui_print("Press any key to continue...", end="")
+    sys.stdout.flush()
+    select.select([sys.stdin], [], [], 10.0)
+    read_input_queue()
 
 
 def print_mediainfo(item: dict) -> None:
@@ -1183,11 +1200,15 @@ def print_mediainfo(item: dict) -> None:
         content_path = str(Path(save_path) / name) if save_path and name else ""
     
     info = get_mediainfo_for_hash(item.get("hash"), content_path)
-    print(f"{COLOR_BOLD}MediaInfo for: {item.get('name')}{COLOR_RESET}")
-    print(info)
-    print("")
-    print("Press any key to continue...", end="", flush=True)
-    _ = get_key()
+    sys.stdout.write("\033[H\033[J")
+    tui_print(f"{COLOR_BOLD}MediaInfo for: {item.get('name')}{COLOR_RESET}")
+    for line in str(info).splitlines():
+        tui_print(line)
+    tui_print("")
+    tui_print("Press any key to continue...", end="")
+    sys.stdout.flush()
+    select.select([sys.stdin], [], [], 10.0)
+    read_input_queue()
 
 
 def fetch_trackers(opener: urllib.request.OpenerDirector, api_url: str, hash_value: str) -> list[dict]:
@@ -1521,9 +1542,12 @@ def main() -> int:
                 hex_bytes = " ".join(f"{b:02x}" for b in buf)
                 with log_path.open("a") as handle:
                     handle.write(f"KEY {hex_bytes}  {buf!r}\n")
+            return 0
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        return 0
+
+    # Setup Resize Handler
+    signal.signal(signal.SIGWINCH, handle_winch)
 
     cached_torrents: list[dict] = []
     cached_rows: list[dict] = []
@@ -1536,9 +1560,15 @@ def main() -> int:
     mi_queue: list[str] = []
     mi_queue_index = 0
     mi_last_tick = 0.0
+    last_key_debug = "-"
+    need_redraw = True
 
     def print_at(row: int, text: str) -> None:
         sys.stdout.write(f"\033[{row};1H\033[2K{text}")
+
+    def tui_print(text: str = "", end: str = "\r\n") -> None:
+        # \r ensures we are at col 1, \033[2K clears the entire line
+        sys.stdout.write(f"\r\033[2K{text}{end}")
 
     def build_list_block(page_rows_local: list[dict]) -> list[str]:
         lines: list[str] = []
@@ -1591,7 +1621,8 @@ def main() -> int:
                     save_path = raw_item.get("save_path") or ""
                     item_name = raw_item.get("name") or ""
                     content_path = str(Path(save_path) / item_name) if save_path and item_name else ""
-                mi_summary = get_mediainfo_summary_cached(item.get("hash"), content_path)
+                # Use background_only=True to prevent blocking draw
+                mi_summary = get_mediainfo_summary_cached(item.get("hash"), content_path, background_only=True)
                 indent = "     "
                 lines.append(f"{indent}{COLOR_GREY}{mi_summary}{COLOR_RESET}")
 
@@ -1611,36 +1642,41 @@ def main() -> int:
                         lines.append(indent + line)
         return lines
 
-    def update_mediainfo_cache(rows_sorted: list[dict], total_pages_local: int) -> None:
+    def update_mediainfo_cache(rows_sorted: list[dict], total_pages_local: int) -> bool:
+        """Process one item from the MediaInfo queue. Returns True if cache was updated."""
         nonlocal mi_bootstrap_done, mi_queue, mi_queue_index, mi_last_tick
-        if not rows_sorted:
-            return
+        if not rows_sorted or not show_mediainfo_inline:
+            return False
         now_tick = time.monotonic()
-        if now_tick - mi_last_tick < 0.2:
-            return
+        if now_tick - mi_last_tick < 0.1: # Faster tick for background loading
+            return False
+        mi_last_tick = now_tick
+
         if not mi_bootstrap_done:
             targets = []
-            for idx in {0, 1, max(0, total_pages_local - 2)}:
-                start = idx * args.page_size
-                end = min(start + args.page_size, len(rows_sorted))
-                targets.extend(rows_sorted[start:end])
+            # Bootstrap priority: current page, then neighbors
+            start_idx = page * args.page_size
+            end_idx = min(start_idx + args.page_size, len(rows_sorted))
+            targets.extend(rows_sorted[start_idx:end_idx])
+            
             for item in targets:
                 hash_value = item.get("hash") or ""
-                if not hash_value:
-                    continue
+                if not hash_value: continue
                 cache_file = CACHE_DIR / f"{hash_value}.summary"
                 if not cache_file.exists() and hash_value not in mi_queue:
                     mi_queue.append(hash_value)
             mi_bootstrap_done = True
+
         if not mi_queue:
+            # Fill queue with remaining items
             for item in rows_sorted:
                 hash_value = item.get("hash") or ""
-                if not hash_value:
-                    continue
+                if not hash_value: continue
                 cache_file = CACHE_DIR / f"{hash_value}.summary"
                 if not cache_file.exists():
                     mi_queue.append(hash_value)
             mi_queue_index = 0
+
         if mi_queue:
             hash_value = mi_queue[mi_queue_index % len(mi_queue)]
             mi_queue_index += 1
@@ -1652,530 +1688,425 @@ def main() -> int:
                     save_path = raw_item.get("save_path") or ""
                     item_name = raw_item.get("name") or ""
                     content_path = str(Path(save_path) / item_name) if save_path and item_name else ""
-                get_mediainfo_summary_cached(hash_value, content_path)
-        mi_last_tick = now_tick
+                # Perform the actual extraction
+                get_mediainfo_summary(hash_value, content_path)
+                return True
+        return False
 
-    while True:
-        now = time.monotonic()
-        if cached_rows and (now - cache_time) < fetch_interval:
-            torrents = cached_torrents
-            rows = cached_rows
-        else:
-            raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/info")
-            try:
-                torrents = json.loads(raw) if raw else []
-            except json.JSONDecodeError:
-                torrents = []
-            rows = build_rows(torrents)
-            cached_torrents = torrents
-            cached_rows = rows
-            cache_time = now
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        while True:
+            now = time.monotonic()
+            data_changed = False
+            if not cached_rows or (now - cache_time) >= fetch_interval:
+                raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/info")
+                try:
+                    torrents = json.loads(raw) if raw else []
+                except json.JSONDecodeError:
+                    torrents = []
+                rows = build_rows(torrents)
+                cached_torrents = torrents
+                cached_rows = rows
+                cache_time = now
+                data_changed = True
 
-        if scope != "all":
-            rows = [r for r in rows if state_group(r.get("raw", {}).get("state", "")) == scope]
+            rows_to_render = cached_rows
+            if scope != "all":
+                rows_to_render = [r for r in rows_to_render if state_group(r.get("raw", {}).get("state", "")) == scope]
 
-        rows = apply_filters(rows, filters)
+            rows_to_render = apply_filters(rows_to_render, filters)
 
-        sort_field = sort_fields[sort_index]
-        def sort_key(row: dict):
-            raw = row.get("raw", {})
-            if sort_field == "added_on":
-                return raw.get("added_on") or 0
-            if sort_field == "name":
+            sort_field = sort_fields[sort_index]
+            def sort_key(row: dict):
+                raw = row.get("raw", {})
+                if sort_field == "added_on": return raw.get("added_on") or 0
+                if sort_field == "name": return row.get("name", "")
+                if sort_field == "state": return state_group(raw.get("state", ""))
+                if sort_field == "ratio": return raw.get("ratio") or 0
+                if sort_field == "progress": return raw.get("progress") or 0
+                if sort_field == "eta": return raw.get("eta") or 0
+                if sort_field == "size": return raw.get("size") or raw.get("total_size") or 0
+                if sort_field == "dlspeed": return raw.get("dlspeed") or 0
+                if sort_field == "upspeed": return raw.get("upspeed") or 0
                 return row.get("name", "")
-            if sort_field == "state":
-                return state_group(raw.get("state", ""))
-            if sort_field == "ratio":
-                return raw.get("ratio") or 0
-            if sort_field == "progress":
-                return raw.get("progress") or 0
-            if sort_field == "eta":
-                return raw.get("eta") or 0
-            if sort_field == "size":
-                return raw.get("size") or raw.get("total_size") or 0
-            if sort_field == "dlspeed":
-                return raw.get("dlspeed") or 0
-            if sort_field == "upspeed":
-                return raw.get("upspeed") or 0
-            return row.get("name", "")
-        rows.sort(key=sort_key, reverse=sort_desc)
-        page_rows, total_pages, page = format_rows(rows, page, args.page_size)
+            rows_to_render.sort(key=sort_key, reverse=sort_desc)
+            
+            page_rows, total_pages, page = format_rows(rows_to_render, page, args.page_size)
 
-        if focus_idx >= len(page_rows):
-            focus_idx = max(0, len(page_rows) - 1)
+            if focus_idx >= len(page_rows):
+                focus_idx = max(0, len(page_rows) - 1)
 
-        selected_row_all = None
-        if selection_hash:
-            for row in rows:
-                if row.get("hash") == selection_hash:
-                    selected_row_all = row
-                    break
-            if not selected_row_all:
-                selection_hash = None
-                selection_name = None
-                in_tab_view = False
-                active_tab = 0
-                set_banner("Selection cleared: item removed.")
-            else:
-                if not any(r.get("hash") == selection_hash for r in page_rows):
-                    selection_hash = None
-                    selection_name = None
+            # Update selection state
+            selected_row_all = None
+            if selection_hash:
+                selected_row_all = next((r for r in cached_rows if r.get("hash") == selection_hash), None)
+                if not selected_row_all:
+                    selection_hash = selection_name = None
                     in_tab_view = False
-                    active_tab = 0
-                    set_banner("Selection cleared: moved off page.")
+                    set_banner("Selection cleared: item removed.")
+                    data_changed = True
                 else:
                     selection_name = selected_row_all.get("name") or selection_name
 
-        # Pre-populate MediaInfo cache if toggle is on
-        update_mediainfo_cache(rows, total_pages)
+            # Background MediaInfo processing
+            if update_mediainfo_cache(rows_to_render, total_pages):
+                data_changed = True # Trigger redraw to show new MI data
 
-        term_w = terminal_width()
-        banner_line = ""
-        if banner_text and time.time() < banner_until:
-            banner_line = f"{COLOR_ACTION_CONFIRM}{banner_text}{COLOR_RESET}"
-        elif not selection_hash:
-            banner_line = f"{COLOR_MUTED}Select an item.{COLOR_RESET}"
-        else:
-            short_hash = (selection_hash or "")[:10]
-            banner_line = f"{COLOR_TAB_ACTIVE}Selected:{COLOR_RESET} {selection_name} ({short_hash})"
+            global NEED_RESIZE
+            if NEED_RESIZE:
+                term_w = terminal_width()
+                have_full_draw = False
+                need_redraw = True
+                NEED_RESIZE = False
 
-        scope_label = scope.upper()
-        page_label = f"Page {page + 1}/{total_pages}"
-        sort_label = f"{sort_field} ({'desc' if sort_desc else 'asc'})"
-
-        name_width = 52
-        size_width = 12
-        cat_width = 14
-        hash_width = 40 if show_full_hash else 6
-        hash_label = "Hash"
-        added_part = f"{'Added':<16} " if show_added else ""
-
-        header_line = (
-            f"{'F':<1} {'No':<2} {'ST':<2} "
-            f"{'Name':<{name_width}} "
-            f"{'Prog':<6} {'Size':<{size_width}} {'DL':<8} {'UL':<8} {'ETA':<6} "
-            f"{added_part}{'Cat':<{cat_width}} {hash_label:<{hash_width}}"
-        )
-        divider_line = "-" * min(len(header_line), term_w)
-
-        list_block_lines = build_list_block(page_rows)
-
-        if in_tab_view and selection_hash:
-            os.system("clear")
-            print(f"{COLOR_DEFAULT}{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{COLOR_RESET}")
-            print(f"API: {api_url}")
-            print(f"Summary: {summary(torrents)}")
-            print(banner_line)
-            print("")
-            print(f"Scope: {COLOR_FOCUS}{scope_label}{COLOR_RESET}  Sort: {COLOR_BRIGHT_PURPLE}{sort_label}{COLOR_RESET}  {page_label}")
-            print("")
-            selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
-            if not selected_row:
-                print("Selection not available on this page.")
-                print(divider_line)
-            else:
-                available_tabs = resolve_available_tabs(opener, api_url, selected_row)
-                if not available_tabs:
-                    available_tabs = ["Info"]
-                active_label = tabs[active_tab]
-                if active_label not in available_tabs:
-                    active_tab = tabs.index(available_tabs[0])
-                    active_label = tabs[active_tab]
-                tab_labels = []
-                for label in available_tabs:
-                    if label == active_label:
-                        tab_labels.append(f"{COLOR_TAB_ACTIVE}[{label}]{COLOR_RESET}")
-                    else:
-                        tab_labels.append(f"{COLOR_TAB_INACTIVE}{label}{COLOR_RESET}")
-                print("Tabs: " + " ".join(tab_labels))
-                print(divider_line)
-                tab_width = max(40, term_w - 4)
-                max_rows = max(10, shutil.get_terminal_size((100, 30)).lines - 14)
-                if active_label == "Info":
-                    content_lines = render_info_lines(selected_row, tab_width)
-                elif active_label == "Trackers":
-                    trackers = fetch_trackers(opener, api_url, selection_hash)
-                    content_lines = render_trackers_lines(trackers, tab_width, max_rows)
-                elif active_label == "Content":
-                    files = fetch_files(opener, api_url, selection_hash)
-                    content_lines = render_files_lines(files, tab_width, max_rows)
-                elif active_label == "Peers":
-                    peers_payload = fetch_peers(opener, api_url, selection_hash)
-                    content_lines = render_peers_lines(peers_payload, tab_width, max_rows)
+            if data_changed or need_redraw:
+                term_w = terminal_width()
+                banner_line = ""
+                if banner_text and time.time() < banner_until:
+                    banner_line = f"{COLOR_ACTION_CONFIRM}{banner_text}{COLOR_RESET}"
+                elif not selection_hash:
+                    banner_line = f"{COLOR_MUTED}Select an item.{COLOR_RESET}"
                 else:
-                    content_lines = render_mediainfo_lines(selected_row, tab_width)
-                for line in content_lines[:max_rows]:
-                    print(line)
-                print(divider_line)
-        else:
-            if not have_full_draw:
-                os.system("clear")
-                print(f"{COLOR_DEFAULT}{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{COLOR_RESET}")
-                print(f"API: {api_url}")
-                print(f"Summary: {summary(torrents)}")
-                print(banner_line)
-                print("")
-                print(f"Scope: {COLOR_FOCUS}{scope_label}{COLOR_RESET}  Sort: {COLOR_BRIGHT_PURPLE}{sort_label}{COLOR_RESET}  {page_label}")
-                print("")
-                list_start_row = 8
-                for line in list_block_lines:
-                    print(line)
-                print(divider_line)
-                list_block_height = len(list_block_lines) + 1
-                have_full_draw = True
-            else:
-                print_at(3, f"Summary: {summary(torrents)}")
-                print_at(4, banner_line)
-                print_at(6, f"Scope: {COLOR_FOCUS}{scope_label}{COLOR_RESET}  Sort: {COLOR_BRIGHT_PURPLE}{sort_label}{COLOR_RESET}  {page_label}")
-                row = list_start_row
-                for _ in range(list_block_height):
-                    print_at(row, "")
-                    row += 1
-                row = list_start_row
-                for line in list_block_lines:
-                    print_at(row, line)
-                    row += 1
-                print_at(row, divider_line)
-                list_block_height = len(list_block_lines) + 1
+                    short_hash = (selection_hash or "")[:10]
+                    banner_line = f"{COLOR_TAB_ACTIVE}Selected:{COLOR_RESET} {selection_name} ({short_hash})"
 
-        print(format_filters_line(filters))
-        print(divider_line)
+                scope_label = scope.upper()
+                page_label = f"Page {page + 1}/{total_pages}"
+                sort_label = f"{sort_field} ({'desc' if sort_desc else 'asc'})"
 
-        list_active = f"{COLOR_TAB_ACTIVE}List{COLOR_RESET}" if not in_tab_view else f"{COLOR_MUTED}List{COLOR_RESET}"
-        tabs_active = f"{COLOR_TAB_ACTIVE}Tabs{COLOR_RESET}" if in_tab_view else f"{COLOR_MUTED}Tabs{COLOR_RESET}"
-        actions_label = "Actions"
-        actions_line = f"P=Pause/Resume V=Verify C=Category E=Tags A=Trackers Q=QC {COLOR_ACTION_DANGER}D=Delete{COLOR_RESET}"
-        if not selection_hash:
-            actions_line = f"{COLOR_DIM}P=Pause/Resume V=Verify C=Category E=Tags A=Trackers Q=QC D=Delete{COLOR_RESET}"
-        print(f"{list_active}: a=all w=down u=up v=paused e=done g=err  s=sort o=order  f=text c=cat #=tag l=line  x=filters p=presets  z=reset")
-        if selection_hash or in_tab_view:
-            print(f"{tabs_active}: Tab=cycle (off after last)  Ctrl-Tab=cycle  T=cycle  Esc=back")
-        print(f"{actions_label}: {actions_line}")
-        print(f"View: t=tags d=added n=hash m=mediainfo  Nav: ' up  / down  , prev  . next  Space/Enter selects/clears  0-9 selects  `=debug")
-        print(divider_line)
+                name_width = 52
+                size_width = 12
+                cat_width = 14
+                hash_width = 40 if show_full_hash else 6
+                hash_label = "Hash"
+                added_part = f"{'Added':<16} " if show_added else ""
 
-        key = get_key()
-        if key == "\x11":
-            break
-        if key == "X":
-            if CACHE_DIR.exists():
-                shutil.rmtree(CACHE_DIR)
-                set_banner("MediaInfo cache cleared.")
-            continue
-        if key == "?":
-            print("Navigation: '(up) /(down) focus, , prev / . next page, Space select/clear, 0-9 select item")
-            print("Scope: a=all, w=downloading, u=uploading, v=paused, e=completed, g=error")
-            print("Sort: s=cycle field, o=toggle asc/desc")
-            print("Filters: f=text, c=category, #=tag, l=line, x=manage stack, p=presets")
-            print("Tabs: Tab=cycle tabs (off after last), Ctrl-Tab=cycle, T=cycle (selection required)")
-            print("View: t=tags, d=added, n=hash width, m=inline mediainfo, X=clear mediainfo cache")
-            print("Reset: z=default view (page 1, newest first)")
-            print("Actions (selection required): P pause/resume, V verify, C category, E tags, A add trackers, Q qc, D delete")
-            print("Esc clears selection (list) or exits tabs. Quit: Ctrl-Q")
-            print("Debug: ` shows raw key sequences (Ctrl-Q to exit)")
-            print("Press any key to continue...", end="", flush=True)
-            _ = get_key()
-            continue
-        if key == "`":
-            capture_key_sequences()
-            continue
-        if key == "ESC":
-            if in_tab_view:
-                in_tab_view = False
+                header_line = (
+                    f"{'F':<1} {'No':<2} {'ST':<2} "
+                    f"{'Name':<{name_width}} "
+                    f"{'Prog':<6} {'Size':<{size_width}} {'DL':<8} {'UL':<8} {'ETA':<6} "
+                    f"{added_part}{'Cat':<{cat_width}} {hash_label:<{hash_width}}"
+                )
+                divider_line = "-" * min(len(header_line), term_w)
+                list_block_lines = build_list_block(page_rows)
+
+                if in_tab_view and selection_hash:
+                    sys.stdout.write("\033[H\033[J") # ANSI Clear
+                    tui_print(f"{COLOR_DEFAULT}{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{COLOR_RESET}")
+                    tui_print(f"API: {api_url}")
+                    tui_print(f"Summary: {summary(cached_torrents)}")
+                    tui_print(banner_line)
+                    tui_print("")
+                    tui_print(f"Scope: {COLOR_FOCUS}{scope_label}{COLOR_RESET}  Sort: {COLOR_BRIGHT_PURPLE}{sort_label}{COLOR_RESET}  {page_label}")
+                    tui_print("")
+                    selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
+                    if not selected_row:
+                        tui_print("Selection not available on this page.")
+                        tui_print(divider_line)
+                    else:
+                        available_tabs = resolve_available_tabs(opener, api_url, selected_row)
+                        if not available_tabs: available_tabs = ["Info"]
+                        active_label = tabs[active_tab]
+                        if active_label not in available_tabs:
+                            active_tab = tabs.index(available_tabs[0])
+                            active_label = tabs[active_tab]
+                        tab_labels = []
+                        for label in available_tabs:
+                            if label == active_label:
+                                tab_labels.append(f"{COLOR_TAB_ACTIVE}[{label}]{COLOR_RESET}")
+                            else:
+                                tab_labels.append(f"{COLOR_TAB_INACTIVE}{label}{COLOR_RESET}")
+                        tui_print("Tabs: " + " ".join(tab_labels))
+                        tui_print(divider_line)
+                        tab_width = max(40, term_w - 4)
+                        max_rows = max(10, shutil.get_terminal_size((100, 30)).lines - 15)
+                        if active_label == "Info": content_lines = render_info_lines(selected_row, tab_width)
+                        elif active_label == "Trackers":
+                            trackers = fetch_trackers(opener, api_url, selection_hash)
+                            content_lines = render_trackers_lines(trackers, tab_width, max_rows)
+                        elif active_label == "Content":
+                            files = fetch_files(opener, api_url, selection_hash)
+                            content_lines = render_files_lines(files, tab_width, max_rows)
+                        elif active_label == "Peers":
+                            peers_payload = fetch_peers(opener, api_url, selection_hash)
+                            content_lines = render_peers_lines(peers_payload, tab_width, max_rows)
+                        else: content_lines = render_mediainfo_lines(selected_row, tab_width)
+                        for line in content_lines[:max_rows]: tui_print(line)
+                        tui_print(divider_line)
+                else:
+                    if not have_full_draw:
+                        sys.stdout.write("\033[H\033[J") # ANSI Clear
+                        tui_print(f"{COLOR_DEFAULT}{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{COLOR_RESET}")
+                        tui_print(f"API: {api_url}")
+                        tui_print(f"Summary: {summary(cached_torrents)}")
+                        tui_print(banner_line)
+                        tui_print("")
+                        tui_print(f"Scope: {COLOR_FOCUS}{scope_label}{COLOR_RESET}  Sort: {COLOR_BRIGHT_PURPLE}{sort_label}{COLOR_RESET}  {page_label}")
+                        tui_print("")
+                        list_start_row = 8
+                        for line in list_block_lines: tui_print(line)
+                        tui_print(divider_line)
+                        list_block_height = len(list_block_lines) + 1
+                        have_full_draw = True
+                    else:
+                        print_at(3, f"Summary: {summary(cached_torrents)}")
+                        print_at(4, banner_line)
+                        print_at(6, f"Scope: {COLOR_FOCUS}{scope_label}{COLOR_RESET}  Sort: {COLOR_BRIGHT_PURPLE}{sort_label}{COLOR_RESET}  {page_label}")
+                        row = list_start_row
+                        # Clear old list block if it was taller
+                        for i in range(list_block_height): print_at(row + i, "")
+                        row = list_start_row
+                        for line in list_block_lines:
+                            print_at(row, line)
+                            row += 1
+                        print_at(row, divider_line)
+                        list_block_height = len(list_block_lines) + 1
+
+                tui_print(format_filters_line(filters))
+                tui_print(divider_line)
+
+                list_active = f"{COLOR_TAB_ACTIVE}List{COLOR_RESET}" if not in_tab_view else f"{COLOR_MUTED}List{COLOR_RESET}"
+                tabs_active = f"{COLOR_TAB_ACTIVE}Tabs{COLOR_RESET}" if in_tab_view else f"{COLOR_MUTED}Tabs{COLOR_RESET}"
+                actions_line = f"P=Pause/Resume V=Verify C=Category E=Tags A=Trackers Q=QC {COLOR_ACTION_DANGER}D=Delete{COLOR_RESET}"
+                if not selection_hash:
+                    actions_line = f"{COLOR_DIM}P=Pause/Resume V=Verify C=Category E=Tags A=Trackers Q=QC D=Delete{COLOR_RESET}"
+                tui_print(f"{list_active}: a=all w=down u=up v=paused e=done g=err  s=sort o=order  f=text c=cat #=tag l=line  x=filters p=presets  z=reset")
+                if selection_hash or in_tab_view:
+                    tui_print(f"{tabs_active}: Tab=cycle (off after last)  Ctrl-Tab=cycle  T=cycle  Esc=back")
+                tui_print(f"Actions: {actions_line}")
+                tui_print(f"View: t=tags d=added n=hash m=mediainfo  Nav: ' up  / down  , prev  . next  Space/Enter selects/clears  0-9 selects  `=debug")
+                tui_print(divider_line)
+                sys.stdout.write(f"\r\033[2KLast Key: {COLOR_CYAN}{last_key_debug}{COLOR_RESET}")
+                sys.stdout.write("\033[J") # Clear to bottom
+                sys.stdout.flush()
+                need_redraw = False
+
+            # Wait for input or timeout
+            r, _, _ = select.select([sys.stdin], [], [], 0.2)
+            if not r:
                 continue
-            if selection_hash:
-                selection_hash = None
-                selection_name = None
-                set_banner("Selection cleared.")
-            continue
-        if key == "CTRL_TAB":
-            if selection_hash:
-                if not in_tab_view:
-                    in_tab_view = True
-                selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
-                if selected_row:
+
+            events = read_input_queue()
+            for key in events:
+                if not key: continue
+                last_key_debug = key
+                need_redraw = True
+
+                if key == "\x11": return 0 # Ctrl-Q
+                if key == "X":
+                    if CACHE_DIR.exists():
+                        shutil.rmtree(CACHE_DIR)
+                        set_banner("MediaInfo cache cleared.")
+                    continue
+                if key == "?":
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    sys.stdout.write("\033[H\033[J")
+                    tui_print("Navigation: '(up) /(down) focus, , prev / . next page, Space select/clear, 0-9 select item")
+                    tui_print("Scope: a=all, w=downloading, u=uploading, v=paused, e=completed, g=error")
+                    tui_print("Sort: s=cycle field, o=toggle asc/desc")
+                    tui_print("Filters: f=text, c=category, #=tag, l=line, x=manage stack, p=presets")
+                    tui_print("Tabs: Tab=cycle tabs (off after last), Ctrl-Tab=cycle, T=cycle (selection required)")
+                    tui_print("View: t=tags, d=added, n=hash width, m=inline mediainfo, X=clear mediainfo cache")
+                    tui_print("Reset: z=default view (page 1, newest first)")
+                    tui_print("Actions (selection required): P pause/resume, V verify, C category, E tags, A add trackers, Q qc, D delete")
+                    tui_print("Esc clears selection (list) or exits tabs. Quit: Ctrl-Q")
+                    tui_print("\nPress any key to continue...", end="")
+                    sys.stdout.flush()
+                    tty.setraw(fd)
+                    read_input_queue() # Clear any pending
+                    select.select([sys.stdin], [], [], 10.0) # Wait for a key
+                    read_input_queue()
+                    have_full_draw = False
+                    continue
+                if key == "`":
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    sys.stdout.write("\033[H\033[J")
+                    capture_key_sequences()
+                    tty.setraw(fd)
+                    have_full_draw = False
+                    continue
+                if key == "ESC":
+                    if in_tab_view: in_tab_view = False
+                    elif selection_hash:
+                        selection_hash = selection_name = None
+                        set_banner("Selection cleared.")
+                    continue
+                if key == "CTRL_TAB":
+                    if selection_hash:
+                        if not in_tab_view: in_tab_view = True
+                        selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
+                        if selected_row:
+                            available = resolve_available_tabs(opener, api_url, selected_row)
+                            if not available: available = ["Info"]
+                            current_label = tabs[active_tab]
+                            if current_label not in available: active_tab = tabs.index(available[0])
+                            else:
+                                idx = available.index(current_label)
+                                next_label = available[(idx + 1) % len(available)]
+                                active_tab = tabs.index(next_label)
+                    continue
+                if key == "'":
+                    if page_rows: focus_idx = max(0, focus_idx - 1)
+                    continue
+                if key == "/":
+                    if page_rows: focus_idx = min(len(page_rows) - 1, focus_idx + 1)
+                    continue
+                if key in (" ", "\r", "\n"):
+                    if page_rows and 0 <= focus_idx < len(page_rows):
+                        focused = page_rows[focus_idx]
+                        if selection_hash and focused.get("hash") == selection_hash:
+                            selection_hash = selection_name = None
+                            set_banner("Selection cleared.")
+                        else:
+                            selection_hash = focused.get("hash")
+                            selection_name = focused.get("name")
+                    continue
+                if key == "\t":
+                    if not selection_hash:
+                        set_banner("Select an item.")
+                        continue
+                    selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
+                    if not selected_row:
+                        set_banner("Selection cleared: moved off page.")
+                        selection_hash = selection_name = None
+                        in_tab_view = False
+                        continue
                     available = resolve_available_tabs(opener, api_url, selected_row)
-                    if not available:
-                        available = ["Info"]
+                    if not available: available = ["Info"]
+                    if not in_tab_view:
+                        in_tab_view = True
+                        if tabs[active_tab] not in available: active_tab = tabs.index(available[0])
+                        continue
                     current_label = tabs[active_tab]
                     if current_label not in available:
-                        active_tab = tabs.index(available[0])
+                        active_tab = tabs.index(available[0]); continue
+                    idx = available.index(current_label)
+                    if idx == len(available) - 1: in_tab_view = False
                     else:
-                        idx = available.index(current_label)
-                        next_label = available[(idx + 1) % len(available)]
+                        next_label = available[idx + 1]
                         active_tab = tabs.index(next_label)
-            continue
-        if key == "'":
-            if page_rows:
-                focus_idx = max(0, focus_idx - 1)
-            continue
-        if key == "/":
-            if page_rows:
-                focus_idx = min(len(page_rows) - 1, focus_idx + 1)
-            continue
-        if key == " ":
-            if page_rows and 0 <= focus_idx < len(page_rows):
-                focused = page_rows[focus_idx]
-                if selection_hash and focused.get("hash") == selection_hash:
-                    selection_hash = None
-                    selection_name = None
-                    set_banner("Selection cleared.")
-                else:
-                    selection_hash = focused.get("hash")
-                    selection_name = focused.get("name")
-            continue
-        if key in ("\r", "\n"):
-            if page_rows and 0 <= focus_idx < len(page_rows):
-                focused = page_rows[focus_idx]
-                if selection_hash and focused.get("hash") == selection_hash:
-                    selection_hash = None
-                    selection_name = None
-                    set_banner("Selection cleared.")
-                else:
-                    selection_hash = focused.get("hash")
-                    selection_name = focused.get("name")
-            continue
-        if key == "\t":
-            if not selection_hash:
-                set_banner("Select an item.")
-                continue
-            selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
-            if not selected_row:
-                set_banner("Selection cleared: moved off page.")
-                selection_hash = None
-                selection_name = None
-                in_tab_view = False
-                continue
-            available = resolve_available_tabs(opener, api_url, selected_row)
-            if not available:
-                available = ["Info"]
-            if not in_tab_view:
-                in_tab_view = True
-                if tabs[active_tab] not in available:
-                    active_tab = tabs.index(available[0])
-                continue
-            current_label = tabs[active_tab]
-            if current_label not in available:
-                active_tab = tabs.index(available[0])
-                continue
-            idx = available.index(current_label)
-            if idx == len(available) - 1:
-                in_tab_view = False
-            else:
-                next_label = available[idx + 1]
-                active_tab = tabs.index(next_label)
-            continue
-        if key == "T":
-            if in_tab_view and selection_hash:
-                selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
-                if selected_row:
-                    available = resolve_available_tabs(opener, api_url, selected_row)
-                    if not available:
-                        available = ["Info"]
-                    current_label = tabs[active_tab]
-                    if current_label not in available:
-                        active_tab = tabs.index(available[0])
-                    else:
-                        idx = available.index(current_label)
-                        next_label = available[(idx + 1) % len(available)]
-                        active_tab = tabs.index(next_label)
-            continue
-        if key == "m":
-            show_mediainfo_inline = not show_mediainfo_inline
-            continue
-        if key == "z":
-            scope = "all"
-            page = 0
-            sort_index = 0
-            sort_desc = True
-            filters = []
-            show_tags = False
-            show_mediainfo_inline = False
-            show_full_hash = False
-            show_added = True
-            focus_idx = 0
-            in_tab_view = False
-            active_tab = 0
-            selection_hash = None
-            selection_name = None
-            set_banner("View reset.")
-            continue
-        if key == "r":
-            cache_time = 0.0
-            continue
-        if key == "a":
-            scope = "all"
-            page = 0
-            continue
-        if key == "w":
-            scope = "downloading"
-            page = 0
-            continue
-        if key == "u":
-            scope = "uploading"
-            page = 0
-            continue
-        if key == "v":
-            scope = "paused"
-            page = 0
-            continue
-        if key == "e":
-            scope = "completed"
-            page = 0
-            continue
-        if key == "g":
-            scope = "error"
-            page = 0
-            continue
-        if key == "f":
-            value = read_line("\nText filter (blank clears): ").strip()
-            filters = [f for f in filters if f["type"] != "text"]
-            if value:
-                negate = value.startswith("!")
-                if negate:
-                    value = value[1:]
-                filters.append({"type": "text", "value": value, "enabled": True, "negate": negate})
-            page = 0
-            continue
-        if key == "l":
-            line = read_line("\nFilter line (text=... cat=... tag=...): ").strip()
-            if line:
-                filters = parse_filter_line(line, filters)
-                page = 0
-            continue
-        if key == "c":
-            value = read_line("\nCategory filter (blank clears): ").strip()
-            filters = [f for f in filters if f["type"] != "category"]
-            if value:
-                negate = value.startswith("!")
-                if negate:
-                    value = value[1:]
-                filters.append({"type": "category", "value": value, "enabled": True, "negate": negate})
-            page = 0
-            continue
-        if key == "#":
-            value = read_line("\nTag filter (comma=OR, plus=AND, !NOT, ()group; blank clears): ").strip()
-            filters = [f for f in filters if f["type"] != "tag"]
-            parsed = parse_tag_filter(value)
-            if parsed:
-                parsed["enabled"] = True
-                filters.append(parsed)
-            page = 0
-            continue
-        if key == "p":
-            print("\nFilter presets:")
-            if not presets:
-                print("  (none)")
-            else:
-                for slot in sorted(presets.keys()):
-                    slot_data = presets[slot] or {}
-                    name = slot_data.get("name") or ""
-                    items = restore_filters(slot_data.get("filters") or [])
-                    label = summarize_filters(items)
-                    print(f"  {slot}: {name} {label}")
-            choice = read_line("Enter slot to load, sN to save, rN to remove (blank cancels): ").strip()
-            if not choice:
-                continue
-            if choice.startswith("s") and choice[1:].isdigit():
-                slot = choice[1:]
-                name = read_line(f"Slot {slot} name (blank keeps): ").strip()
-                existing = presets.get(slot, {})
-                presets[slot] = {
-                    "name": name or existing.get("name", ""),
-                    "filters": serialize_filters(filters),
-                }
-                save_presets(PRESET_FILE, presets)
-                continue
-            if choice.startswith("r") and choice[1:].isdigit():
-                slot = choice[1:]
-                if slot in presets:
-                    del presets[slot]
-                    save_presets(PRESET_FILE, presets)
-                continue
-            if choice.isdigit() and choice in presets:
-                filters = restore_filters(presets[choice].get("filters") or [])
-                page = 0
-            continue
-        if key == "x":
-            if not filters:
-                print("\nNo filters set. Press any key to continue...", end="", flush=True)
-                _ = get_key()
-                continue
-            print("\nActive filters:")
-            for idx, flt in enumerate(filters, 1):
-                flag = "x" if flt.get("enabled", True) else " "
-                if flt["type"] == "text":
-                    prefix = "!" if flt.get("negate") else ""
-                    label = f"text={prefix}{flt['value']}"
-                elif flt["type"] == "category":
-                    prefix = "!" if flt.get("negate") else ""
-                    label = f"cat={prefix}{flt['value']}"
-                else:
-                    label = f"tag={flt.get('raw', '')}"
-                print(f"  {idx}. [{flag}] {label}")
-            choice = read_line("Enter number to toggle, rN to remove, 0 clears all (blank cancels): ").strip()
-            if choice == "0":
-                filters = []
-            elif choice.startswith("r") and choice[1:].isdigit():
-                idx = int(choice[1:])
-                if 1 <= idx <= len(filters):
-                    del filters[idx - 1]
-            elif choice.isdigit():
-                idx = int(choice)
-                if 1 <= idx <= len(filters):
-                    filters[idx - 1]["enabled"] = not filters[idx - 1].get("enabled", True)
-            page = 0
-            continue
-        if key == "s":
-            sort_index = (sort_index + 1) % len(sort_fields)
-            page = 0
-            continue
-        if key == "o":
-            sort_desc = not sort_desc
-            page = 0
-            continue
-        if key == "t":
-            show_tags = not show_tags
-            continue
-        if key == "d":
-            show_added = not show_added
-            continue
-        if key == "n":
-            show_full_hash = not show_full_hash
-            continue
-        if key == ",":
-            page = total_pages - 1 if page == 0 else page - 1
-            focus_idx = 0
-            continue
-        if key == ".":
-            page = 0 if page >= total_pages - 1 else page + 1
-            focus_idx = 0
-            continue
-        if key and key.isdigit():
-            idx = int(key)
-            if 0 <= idx < len(page_rows):
-                selection_hash = page_rows[idx].get("hash")
-                selection_name = page_rows[idx].get("name")
-                focus_idx = idx
-            continue
-        if key and key.isupper():
-            if not selection_hash:
-                continue
-            if in_tab_view:
-                continue
-            selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
-            if not selected_row:
-                set_banner("Selection cleared: moved off page.")
-                selection_hash = None
-                selection_name = None
-                continue
-            if key in {"P", "V", "C", "E", "A", "Q", "D"}:
-                result = apply_action(opener, api_url, key, selected_row)
-                set_banner(f"{key}: {result}")
-            continue
+                    continue
+                if key == "T":
+                    if in_tab_view and selection_hash:
+                        selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
+                        if selected_row:
+                            available = resolve_available_tabs(opener, api_url, selected_row)
+                            if not available: available = ["Info"]
+                            current_label = tabs[active_tab]
+                            if current_label not in available: active_tab = tabs.index(available[0])
+                            else:
+                                idx = available.index(current_label)
+                                next_label = available[(idx + 1) % len(available)]
+                                active_tab = tabs.index(next_label)
+                    continue
+                if key == "m":
+                    show_mediainfo_inline = not show_mediainfo_inline
+                    have_full_draw = False
+                    continue
+                if key == "z":
+                    scope = "all"; page = 0; sort_index = 0; sort_desc = True; filters = []
+                    show_tags = show_mediainfo_inline = show_full_hash = False
+                    show_added = True; focus_idx = 0; in_tab_view = False; active_tab = 0
+                    selection_hash = selection_name = None
+                    have_full_draw = False
+                    continue
+                if key == ",":
+                    if page > 0: page -= 1; focus_idx = 0
+                    have_full_draw = False
+                    continue
+                if key == ".":
+                    if page < total_pages - 1: page += 1; focus_idx = 0
+                    have_full_draw = False
+                    continue
+                if key == "a": scope = "all"; page = 0; focus_idx = 0; have_full_draw = False; continue
+                if key == "w": scope = "downloading"; page = 0; focus_idx = 0; have_full_draw = False; continue
+                if key == "u": scope = "uploading"; page = 0; focus_idx = 0; have_full_draw = False; continue
+                if key == "v": scope = "paused"; page = 0; focus_idx = 0; have_full_draw = False; continue
+                if key == "e": scope = "completed"; page = 0; focus_idx = 0; have_full_draw = False; continue
+                if key == "g": scope = "error"; page = 0; focus_idx = 0; have_full_draw = False; continue
+                if key == "s": sort_index = (sort_index + 1) % len(sort_fields); have_full_draw = False; continue
+                if key == "o": sort_desc = not sort_desc; have_full_draw = False; continue
+                if key == "t": show_tags = not show_tags; have_full_draw = False; continue
+                if key == "d": show_added = not show_added; have_full_draw = False; continue
+                if key == "n": show_full_hash = not show_full_hash; have_full_draw = False; continue
+                if key in "0123456789":
+                    idx = int(key)
+                    if idx < len(page_rows):
+                        focus_idx = idx
+                        selection_hash = page_rows[idx].get("hash")
+                        selection_name = page_rows[idx].get("name")
+                    continue
+                if key == "f":
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    val = read_line("Text filter: ").strip()
+                    if val:
+                        negate = False
+                        if val.startswith("!"): negate = True; val = val[1:]
+                        filters = [f for f in filters if f.get("type") != "text"]
+                        filters.append({"type": "text", "value": val, "enabled": True, "negate": negate})
+                    tty.setraw(fd); have_full_draw = False; continue
+                if key == "c":
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    val = read_line("Category filter (blank clears, '-' for none): ").strip()
+                    filters = [f for f in filters if f.get("type") != "category"]
+                    if val:
+                        negate = False
+                        if val.startswith("!"): negate = True; val = val[1:]
+                        filters.append({"type": "category", "value": val, "enabled": True, "negate": negate})
+                    tty.setraw(fd); have_full_draw = False; continue
+                if key == "#":
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    val = read_line("Tag filter expression: ").strip()
+                    filters = [f for f in filters if f.get("type") != "tag"]
+                    if val:
+                        parsed = parse_tag_filter(val)
+                        if parsed: parsed["enabled"] = True; filters.append(parsed)
+                    tty.setraw(fd); have_full_draw = False; continue
+                if key == "l":
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    val = read_line("Filter line (e.g. q=term cat=movies tag=tag1): ").strip()
+                    if val: filters = parse_filter_line(val, filters)
+                    tty.setraw(fd); have_full_draw = False; continue
+                if key == "x":
+                    if filters:
+                        filters = [f for f in filters if not f.get("enabled", True)] if all(f.get("enabled", True) for f in filters) else [dict(f, enabled=True) for f in filters]
+                    continue
+                if key == "p":
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    tui_print("\nPresets (Slots):")
+                    for s_idx in range(1, 10):
+                        slot = presets.get(str(s_idx))
+                        label = summarize_filters(restore_filters(slot)) if slot else "-"
+                        tui_print(f"  {s_idx}: {label}")
+                    val = read_line("\nSelect slot to load (1-9), or s[1-9] to save current: ").strip()
+                    if val.isdigit() and val in presets:
+                        filters = restore_filters(presets[val])
+                        set_banner(f"Loaded slot {val}")
+                    elif val.startswith("s") and val[1:].isdigit():
+                        s_idx = val[1:]
+                        presets[s_idx] = serialize_filters(filters)
+                        save_presets(PRESET_FILE, presets)
+                        set_banner(f"Saved current to slot {s_idx}")
+                    tty.setraw(fd); have_full_draw = False; continue
 
-    return 0
+                # Actions
+                if selection_hash and key.upper() in "PVCEAQD":
+                    selected_item = next((r for r in page_rows if r.get("hash") == selection_hash), None)
+                    if selected_item:
+                        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                        res = apply_action(opener, api_url, key.upper(), selected_item)
+                        set_banner(f"Action {key.upper()}: {res}")
+                        tty.setraw(fd); have_full_draw = False; continue
+
+        return 0
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(0)
