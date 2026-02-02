@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.6.0"
+VERSION = "1.6.2"
 LAST_UPDATED = "2026-02-02"
 
 COLOR_CYAN = "\033[36m"
@@ -1563,6 +1563,48 @@ def main() -> int:
     last_key_debug = "-"
     need_redraw = True
 
+    def cycle_tabs(direction: int = 1, exit_after_last: bool = False) -> None:
+        nonlocal in_tab_view, active_tab, have_full_draw
+        if not selection_hash:
+            set_banner("Select an item.")
+            return
+        
+        selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
+        if not selected_row:
+            set_banner("Selection moved off page.")
+            return
+            
+        available = resolve_available_tabs(opener, api_url, selected_row)
+        if not available:
+            available = ["Info"]
+            
+        if not in_tab_view:
+            in_tab_view = True
+            # When entering, try to preserve last active tab if available, else first
+            current_label = tabs[active_tab]
+            if current_label not in available:
+                active_tab = tabs.index(available[0])
+            have_full_draw = False
+            return
+
+        current_label = tabs[active_tab]
+        if current_label not in available:
+            active_tab = tabs.index(available[0])
+            return
+            
+        idx = available.index(current_label)
+        
+        if exit_after_last and direction > 0 and idx == len(available) - 1:
+            in_tab_view = False
+            have_full_draw = False
+            return
+            
+        # Normal cycle
+        new_idx = (idx + direction) % len(available)
+        next_label = available[new_idx]
+        active_tab = tabs.index(next_label)
+        have_full_draw = False
+
     def print_at(row: int, text: str) -> None:
         sys.stdout.write(f"\033[{row};1H\033[2K{text}")
 
@@ -1876,7 +1918,7 @@ def main() -> int:
                 if selection_hash or in_tab_view:
                     tui_print(f"{tabs_active}: Tab=cycle (off after last)  Ctrl-Tab=cycle  T=cycle  Esc=back")
                 tui_print(f"Actions: {actions_line}")
-                tui_print(f"View: t=tags d=added n=hash m=mediainfo  Nav: ' up  / down  , prev  . next  Space/Enter selects/clears  0-9 selects  `=debug")
+                tui_print(f"View: t=tags d=added h=hash m=mediainfo  Nav: ' up  / down  , prev  . next  Space/Enter selects/clears  0-9 selects  `=debug")
                 tui_print(divider_line)
                 sys.stdout.write(f"\r\033[2KLast Key: {COLOR_CYAN}{last_key_debug}{COLOR_RESET}")
                 sys.stdout.write("\033[J") # Clear to bottom
@@ -1908,7 +1950,7 @@ def main() -> int:
                     tui_print("Sort: s=cycle field, o=toggle asc/desc")
                     tui_print("Filters: f=text, c=category, #=tag, l=line, x=manage stack, p=presets")
                     tui_print("Tabs: Tab=cycle tabs (off after last), Ctrl-Tab=cycle, T=cycle (selection required)")
-                    tui_print("View: t=tags, d=added, n=hash width, m=inline mediainfo, X=clear mediainfo cache")
+                    tui_print("View: t=tags, d=added, h=hash width, m=inline mediainfo, X=clear mediainfo cache")
                     tui_print("Reset: z=default view (page 1, newest first)")
                     tui_print("Actions (selection required): P pause/resume, V verify, C category, E tags, A add trackers, Q qc, D delete")
                     tui_print("Esc clears selection (list) or exits tabs. Quit: Ctrl-Q")
@@ -1928,24 +1970,16 @@ def main() -> int:
                     have_full_draw = False
                     continue
                 if key == "ESC":
-                    if in_tab_view: in_tab_view = False
+                    if in_tab_view: in_tab_view = False; have_full_draw = False
                     elif selection_hash:
                         selection_hash = selection_name = None
                         set_banner("Selection cleared.")
                     continue
                 if key == "CTRL_TAB":
-                    if selection_hash:
-                        if not in_tab_view: in_tab_view = True
-                        selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
-                        if selected_row:
-                            available = resolve_available_tabs(opener, api_url, selected_row)
-                            if not available: available = ["Info"]
-                            current_label = tabs[active_tab]
-                            if current_label not in available: active_tab = tabs.index(available[0])
-                            else:
-                                idx = available.index(current_label)
-                                next_label = available[(idx + 1) % len(available)]
-                                active_tab = tabs.index(next_label)
+                    cycle_tabs(direction=1, exit_after_last=False)
+                    continue
+                if key == "SHIFT_TAB":
+                    cycle_tabs(direction=-1, exit_after_last=False)
                     continue
                 if key == "'":
                     if page_rows: focus_idx = max(0, focus_idx - 1)
@@ -1964,42 +1998,10 @@ def main() -> int:
                             selection_name = focused.get("name")
                     continue
                 if key == "\t":
-                    if not selection_hash:
-                        set_banner("Select an item.")
-                        continue
-                    selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
-                    if not selected_row:
-                        set_banner("Selection cleared: moved off page.")
-                        selection_hash = selection_name = None
-                        in_tab_view = False
-                        continue
-                    available = resolve_available_tabs(opener, api_url, selected_row)
-                    if not available: available = ["Info"]
-                    if not in_tab_view:
-                        in_tab_view = True
-                        if tabs[active_tab] not in available: active_tab = tabs.index(available[0])
-                        continue
-                    current_label = tabs[active_tab]
-                    if current_label not in available:
-                        active_tab = tabs.index(available[0]); continue
-                    idx = available.index(current_label)
-                    if idx == len(available) - 1: in_tab_view = False
-                    else:
-                        next_label = available[idx + 1]
-                        active_tab = tabs.index(next_label)
+                    cycle_tabs(direction=1, exit_after_last=True)
                     continue
                 if key == "T":
-                    if in_tab_view and selection_hash:
-                        selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
-                        if selected_row:
-                            available = resolve_available_tabs(opener, api_url, selected_row)
-                            if not available: available = ["Info"]
-                            current_label = tabs[active_tab]
-                            if current_label not in available: active_tab = tabs.index(available[0])
-                            else:
-                                idx = available.index(current_label)
-                                next_label = available[(idx + 1) % len(available)]
-                                active_tab = tabs.index(next_label)
+                    cycle_tabs(direction=1, exit_after_last=False)
                     continue
                 if key == "m":
                     show_mediainfo_inline = not show_mediainfo_inline
@@ -2030,7 +2032,7 @@ def main() -> int:
                 if key == "o": sort_desc = not sort_desc; have_full_draw = False; continue
                 if key == "t": show_tags = not show_tags; have_full_draw = False; continue
                 if key == "d": show_added = not show_added; have_full_draw = False; continue
-                if key == "n": show_full_hash = not show_full_hash; have_full_draw = False; continue
+                if key == "h": show_full_hash = not show_full_hash; have_full_draw = False; continue
                 if key in "0123456789":
                     idx = int(key)
                     if idx < len(page_rows):
