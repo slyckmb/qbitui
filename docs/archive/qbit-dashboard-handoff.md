@@ -5,7 +5,7 @@ Continue improving `bin/qbit-dashboard.py` (TUI). Current focus: stable, low-lat
 
 ## Current State Summary
 - File touched: `bin/qbit-dashboard.py` only.
-- Version bumped to `1.6.0`.
+- Version bumped to `1.6.2`.
 - Navigation keys now:
   - `,` page prev
   - `.` page next
