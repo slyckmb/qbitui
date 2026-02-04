@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.6.2"
+VERSION = "1.6.2-2026-02-03T16-37-00.492312"
 LAST_UPDATED = "2026-02-02"
 
 COLOR_CYAN = "\033[36m"
@@ -179,7 +179,7 @@ def read_input_queue() -> list[str]:
             
             if not seq:
                 keys.append("ESC")
-            elif seq == "[Z":
+            elif seq in ("[Z", "[1;2Z", "[1;2I"):
                 keys.append("SHIFT_TAB")
             elif seq.startswith("[1;5") or seq.startswith("[1;6"):
                 if seq.endswith("I") or seq.endswith("Z"):
@@ -1562,6 +1562,7 @@ def main() -> int:
     mi_last_tick = 0.0
     last_key_debug = "-"
     need_redraw = True
+    output_buffer = ""
 
     def cycle_tabs(direction: int = 1, exit_after_last: bool = False) -> None:
         nonlocal in_tab_view, active_tab, have_full_draw
@@ -1580,10 +1581,14 @@ def main() -> int:
             
         if not in_tab_view:
             in_tab_view = True
-            # When entering, try to preserve last active tab if available, else first
-            current_label = tabs[active_tab]
-            if current_label not in available:
-                active_tab = tabs.index(available[0])
+            # When entering, try to preserve last active tab if available, else first/last based on direction
+            if direction > 0:
+                current_label = tabs[active_tab]
+                if current_label not in available:
+                    active_tab = tabs.index(available[0])
+            else:
+                # Entering backward: jump to last available
+                active_tab = tabs.index(available[-1])
             have_full_draw = False
             return
 
@@ -1596,6 +1601,7 @@ def main() -> int:
         
         if exit_after_last and direction > 0 and idx == len(available) - 1:
             in_tab_view = False
+            active_tab = 0 # Reset for next entry
             have_full_draw = False
             return
             
@@ -1606,11 +1612,19 @@ def main() -> int:
         have_full_draw = False
 
     def print_at(row: int, text: str) -> None:
-        sys.stdout.write(f"\033[{row};1H\033[2K{text}")
+        tui_print(f"\033[{row};1H\033[2K{text}", end="")
 
     def tui_print(text: str = "", end: str = "\r\n") -> None:
-        # \r ensures we are at col 1, \033[2K clears the entire line
-        sys.stdout.write(f"\r\033[2K{text}{end}")
+        # Buffer the output instead of immediate write
+        nonlocal output_buffer
+        output_buffer += f"{text}{end}"
+
+    def tui_flush() -> None:
+        nonlocal output_buffer
+        if output_buffer:
+            sys.stdout.write(output_buffer)
+            sys.stdout.flush()
+            output_buffer = ""
 
     def build_list_block(page_rows_local: list[dict]) -> list[str]:
         lines: list[str] = []
@@ -1684,22 +1698,20 @@ def main() -> int:
                         lines.append(indent + line)
         return lines
 
-    def update_mediainfo_cache(rows_sorted: list[dict], total_pages_local: int) -> bool:
-        """Process one item from the MediaInfo queue. Returns True if cache was updated."""
+    def update_mediainfo_cache(rows_sorted: list[dict], page_rows_visible: list[dict]) -> bool:
+        """Process one item from the MediaInfo queue. Returns True if cache was updated and item is visible."""
         nonlocal mi_bootstrap_done, mi_queue, mi_queue_index, mi_last_tick
         if not rows_sorted or not show_mediainfo_inline:
             return False
         now_tick = time.monotonic()
-        if now_tick - mi_last_tick < 0.1: # Faster tick for background loading
+        if now_tick - mi_last_tick < 0.3: # Slower tick to reduce flicker
             return False
         mi_last_tick = now_tick
 
         if not mi_bootstrap_done:
             targets = []
-            # Bootstrap priority: current page, then neighbors
-            start_idx = page * args.page_size
-            end_idx = min(start_idx + args.page_size, len(rows_sorted))
-            targets.extend(rows_sorted[start_idx:end_idx])
+            # Bootstrap priority: current page
+            targets.extend(page_rows_visible)
             
             for item in targets:
                 hash_value = item.get("hash") or ""
@@ -1715,7 +1727,7 @@ def main() -> int:
                 hash_value = item.get("hash") or ""
                 if not hash_value: continue
                 cache_file = CACHE_DIR / f"{hash_value}.summary"
-                if not cache_file.exists():
+                if not cache_file.exists() and hash_value not in mi_queue:
                     mi_queue.append(hash_value)
             mi_queue_index = 0
 
@@ -1732,7 +1744,10 @@ def main() -> int:
                     content_path = str(Path(save_path) / item_name) if save_path and item_name else ""
                 # Perform the actual extraction
                 get_mediainfo_summary(hash_value, content_path)
-                return True
+                
+                # Only redraw if the item is visible on screen
+                is_visible = any(r.get("hash") == hash_value for r in page_rows_visible)
+                return is_visible
         return False
 
     fd = sys.stdin.fileno()
@@ -1793,7 +1808,7 @@ def main() -> int:
                     selection_name = selected_row_all.get("name") or selection_name
 
             # Background MediaInfo processing
-            if update_mediainfo_cache(rows_to_render, total_pages):
+            if update_mediainfo_cache(rows_to_render, page_rows):
                 data_changed = True # Trigger redraw to show new MI data
 
             global NEED_RESIZE
@@ -1835,7 +1850,7 @@ def main() -> int:
                 list_block_lines = build_list_block(page_rows)
 
                 if in_tab_view and selection_hash:
-                    sys.stdout.write("\033[H\033[J") # ANSI Clear
+                    output_buffer = "\033[H\033[J" # Start with clear
                     tui_print(f"{COLOR_DEFAULT}{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{COLOR_RESET}")
                     tui_print(f"API: {api_url}")
                     tui_print(f"Summary: {summary(cached_torrents)}")
@@ -1877,9 +1892,10 @@ def main() -> int:
                         else: content_lines = render_mediainfo_lines(selected_row, tab_width)
                         for line in content_lines[:max_rows]: tui_print(line)
                         tui_print(divider_line)
+                        footer_row = 10 + len(content_lines[:max_rows]) + 1
                 else:
                     if not have_full_draw:
-                        sys.stdout.write("\033[H\033[J") # ANSI Clear
+                        output_buffer = "\033[H\033[J" # Start with clear
                         tui_print(f"{COLOR_DEFAULT}{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{COLOR_RESET}")
                         tui_print(f"API: {api_url}")
                         tui_print(f"Summary: {summary(cached_torrents)}")
@@ -1891,38 +1907,46 @@ def main() -> int:
                         for line in list_block_lines: tui_print(line)
                         tui_print(divider_line)
                         list_block_height = len(list_block_lines) + 1
+                        footer_row = list_start_row + list_block_height
                         have_full_draw = True
                     else:
                         print_at(3, f"Summary: {summary(cached_torrents)}")
                         print_at(4, banner_line)
                         print_at(6, f"Scope: {COLOR_FOCUS}{scope_label}{COLOR_RESET}  Sort: {COLOR_BRIGHT_PURPLE}{sort_label}{COLOR_RESET}  {page_label}")
                         row = list_start_row
-                        # Clear old list block if it was taller
-                        for i in range(list_block_height): print_at(row + i, "")
+                        # Clear ONLY if new list is shorter
+                        current_height = len(list_block_lines) + 1
+                        if list_block_height > current_height:
+                            for i in range(current_height, list_block_height): print_at(row + i, "")
+                        
                         row = list_start_row
                         for line in list_block_lines:
                             print_at(row, line)
                             row += 1
                         print_at(row, divider_line)
-                        list_block_height = len(list_block_lines) + 1
+                        list_block_height = current_height
+                        footer_row = row + 1
 
-                tui_print(format_filters_line(filters))
-                tui_print(divider_line)
+                # Render Footer with absolute positioning
+                row = footer_row
+                print_at(row, format_filters_line(filters)); row += 1
+                print_at(row, divider_line); row += 1
 
                 list_active = f"{COLOR_TAB_ACTIVE}List{COLOR_RESET}" if not in_tab_view else f"{COLOR_MUTED}List{COLOR_RESET}"
                 tabs_active = f"{COLOR_TAB_ACTIVE}Tabs{COLOR_RESET}" if in_tab_view else f"{COLOR_MUTED}Tabs{COLOR_RESET}"
                 actions_line = f"P=Pause/Resume V=Verify C=Category E=Tags A=Trackers Q=QC {COLOR_ACTION_DANGER}D=Delete{COLOR_RESET}"
                 if not selection_hash:
                     actions_line = f"{COLOR_DIM}P=Pause/Resume V=Verify C=Category E=Tags A=Trackers Q=QC D=Delete{COLOR_RESET}"
-                tui_print(f"{list_active}: a=all w=down u=up v=paused e=done g=err  s=sort o=order  f=text c=cat #=tag l=line  x=filters p=presets  z=reset")
+                
+                print_at(row, f"{list_active}: a=all w=down u=up v=paused e=done g=err  s=sort o=order  f=text c=cat #=tag l=line  x=filters p=presets  z=reset"); row += 1
                 if selection_hash or in_tab_view:
-                    tui_print(f"{tabs_active}: Tab=cycle (off after last)  Ctrl-Tab=cycle  T=cycle  Esc=back")
-                tui_print(f"Actions: {actions_line}")
-                tui_print(f"View: t=tags d=added h=hash m=mediainfo  Nav: ' up  / down  , prev  . next  Space/Enter selects/clears  0-9 selects  `=debug")
-                tui_print(divider_line)
-                sys.stdout.write(f"\r\033[2KLast Key: {COLOR_CYAN}{last_key_debug}{COLOR_RESET}")
-                sys.stdout.write("\033[J") # Clear to bottom
-                sys.stdout.flush()
+                    print_at(row, f"{tabs_active}: Tab=cycle (off after last)  Ctrl-Tab=cycle  T=cycle  Esc=back"); row += 1
+                print_at(row, f"Actions: {actions_line}"); row += 1
+                print_at(row, f"View: t=tags d=added h=hash m=mediainfo  Nav: ' up  / down  , prev  . next  Space/Enter selects/clears  0-9 selects  `=debug"); row += 1
+                print_at(row, divider_line); row += 1
+                
+                print_at(row, f"Last Key: {COLOR_CYAN}{last_key_debug}{COLOR_RESET}\033[J")
+                tui_flush()
                 need_redraw = False
 
             # Wait for input or timeout
@@ -1996,6 +2020,7 @@ def main() -> int:
                         else:
                             selection_hash = focused.get("hash")
                             selection_name = focused.get("name")
+                            active_tab = 0 # Reset tab focus for new selection
                     continue
                 if key == "\t":
                     cycle_tabs(direction=1, exit_after_last=True)
@@ -2039,6 +2064,7 @@ def main() -> int:
                         focus_idx = idx
                         selection_hash = page_rows[idx].get("hash")
                         selection_name = page_rows[idx].get("name")
+                        active_tab = 0 # Reset tab focus for new selection
                     continue
                 if key == "f":
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
