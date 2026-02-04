@@ -32,8 +32,8 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.6.2-2026-02-03T16-37-00.492312"
-LAST_UPDATED = "2026-02-02"
+VERSION = "1.6.3-2026-02-04T14-48-27.678302"
+LAST_UPDATED = "2026-02-04"
 
 COLOR_CYAN = "\033[36m"
 COLOR_GREEN = "\033[32m"
@@ -1107,108 +1107,7 @@ def apply_action(opener: urllib.request.OpenerDirector, api_url: str, action: st
     return "Unknown action"
 
 
-def print_files(opener: urllib.request.OpenerDirector, api_url: str, item: dict) -> None:
-    hash_value = item.get("hash")
-    if not hash_value:
-        tui_print("Missing hash")
-        read_input_queue()
-        return
 
-    raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/files", {"hash": hash_value})
-    try:
-        files = json.loads(raw)
-    except Exception:
-        tui_print(f"Failed to parse files: {raw}")
-        read_input_queue()
-        return
-
-    if not files:
-        tui_print("No files found.")
-        read_input_queue()
-        return
-
-    sys.stdout.write("\033[H\033[J")
-    tui_print(f"{COLOR_BOLD}Files for: {item.get('name')}{COLOR_RESET}")
-    headers = ["Index", "Name", "Size", "Prog", "Priority"]
-    widths = [5, 60, 10, 6, 10]
-    
-    header_line = "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers))
-    tui_print(header_line)
-    tui_print("-" * len(header_line))
-
-    # Sort files by name
-    files.sort(key=lambda x: x.get("name", ""))
-    
-    priority_map = {0: "Do not DL", 1: "Normal", 2: "High", 6: "Max", 7: "Forced"}
-
-    for idx, f in enumerate(files):
-        name = truncate(f.get("name", ""), widths[1])
-        size = size_str(f.get("size", 0))
-        prog = f"{int(f.get('progress', 0) * 100)}%"
-        prio = priority_map.get(f.get("priority", 1), str(f.get("priority")))
-        
-        line = (
-            f"{str(idx):<5} "
-            f"{name:<60} "
-            f"{size:<10} "
-            f"{prog:<6} "
-            f"{prio:<10}"
-        )
-        tui_print(line)
-
-    tui_print("")
-    tui_print("Press any key to continue...", end="")
-    sys.stdout.flush()
-    # Wait for key
-    select.select([sys.stdin], [], [], 10.0)
-    read_input_queue()
-
-
-def print_details(item: dict) -> None:
-    raw = item.get("raw") or {}
-    sys.stdout.write("\033[H\033[J")
-    tui_print(f"{COLOR_BOLD}Details{COLOR_RESET}")
-    tui_print(f"  Name: {item.get('name')}")
-    tui_print(f"  State: {item.get('state')}")
-    tui_print(f"  Category: {item.get('category')}")
-    tui_print(f"  Tags: {item.get('tags')}")
-    tui_print(f"  Size: {item.get('size')}")
-    tui_print(f"  Progress: {item.get('progress')}")
-    tui_print(f"  Ratio: {item.get('ratio')}")
-    tui_print(f"  DL/UL: {item.get('dlspeed')} / {item.get('upspeed')}")
-    tui_print(f"  ETA: {item.get('eta')}")
-    tui_print(f"  Hash: {item.get('hash')}")
-    for key in ("save_path", "content_path", "tracker", "completion_on", "added_on", "last_activity", "state", "magnet_uri"):
-        if key in raw:
-            value = raw.get(key)
-            if key.endswith("_on") and isinstance(value, (int, float)):
-                value = format_ts(value)
-            tui_print(f"  {key}: {value}")
-    tui_print("")
-    tui_print("Press any key to continue...", end="")
-    sys.stdout.flush()
-    select.select([sys.stdin], [], [], 10.0)
-    read_input_queue()
-
-
-def print_mediainfo(item: dict) -> None:
-    raw = item.get("raw") or {}
-    content_path = raw.get("content_path")
-    if not content_path:
-        save_path = raw.get("save_path") or ""
-        name = raw.get("name") or ""
-        content_path = str(Path(save_path) / name) if save_path and name else ""
-    
-    info = get_mediainfo_for_hash(item.get("hash"), content_path)
-    sys.stdout.write("\033[H\033[J")
-    tui_print(f"{COLOR_BOLD}MediaInfo for: {item.get('name')}{COLOR_RESET}")
-    for line in str(info).splitlines():
-        tui_print(line)
-    tui_print("")
-    tui_print("Press any key to continue...", end="")
-    sys.stdout.flush()
-    select.select([sys.stdin], [], [], 10.0)
-    read_input_queue()
 
 
 def fetch_trackers(opener: urllib.request.OpenerDirector, api_url: str, hash_value: str) -> list[dict]:
@@ -1357,7 +1256,7 @@ def render_mediainfo_lines(item: dict, width: int) -> list[str]:
         save_path = raw.get("save_path") or ""
         name = raw.get("name") or ""
         content_path = str(Path(save_path) / name) if save_path and name else ""
-    info = get_mediainfo_for_hash(item.get("hash"), content_path)
+    info = get_mediainfo_for_hash(str(item.get("hash") or ""), content_path)
     lines = []
     for line in str(info).splitlines():
         lines.extend(wrap_ansi(line, width))
@@ -1678,7 +1577,7 @@ def main() -> int:
                     item_name = raw_item.get("name") or ""
                     content_path = str(Path(save_path) / item_name) if save_path and item_name else ""
                 # Use background_only=True to prevent blocking draw
-                mi_summary = get_mediainfo_summary_cached(item.get("hash"), content_path, background_only=True)
+                mi_summary = get_mediainfo_summary_cached(str(item.get("hash") or ""), content_path, background_only=True)
                 indent = "     "
                 lines.append(f"{indent}{COLOR_GREY}{mi_summary}{COLOR_RESET}")
 
