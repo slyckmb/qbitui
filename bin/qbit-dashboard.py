@@ -2055,7 +2055,9 @@ def main() -> int:
                     f"{'Prog':<6} {'Size':<{size_width}} {'DL':<8} {'UL':<8} {'ETA':<6} "
                     f"{added_part}{'Cat':<{cat_width}} {hash_label:<{hash_width}}"
                 )
-                divider_line = "-" * min(len(header_line), term_w)
+                # Use content width for consistent layout
+                content_width = min(len(header_line), term_w)
+                divider_line = "-" * content_width
                 list_block_lines = build_list_block(page_rows)
 
                 if in_tab_view and selection_hash:
@@ -2117,7 +2119,7 @@ def main() -> int:
                             page=page,
                             total_pages=total_pages,
                             filters=filters,
-                            width=term_w
+                            width=content_width
                         )
                         for line in header_lines:
                             tui_print(line)
