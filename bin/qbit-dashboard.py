@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.7.6"
+VERSION = "1.7.7"
 LAST_UPDATED = "2026-02-06"
 
 # ============================================================================
@@ -633,18 +633,29 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
 
     # Template covers General, Video, and Audio tracks.
     inform = "General;%Format%|%Duration/String3%|%OverallBitRate/String%|Video;%Width%x%Height% %Format% %BitRate/String%|Audio;%Format% %Channel(s)%ch"
-    
-    result = subprocess.run(
-        [tool, f"--Inform={inform}", str(target)],
-        capture_output=True,
-        text=True,
-    )
-    
-    res = (result.stdout or "").strip()
-    if not res:
-        # Fallback for files where track-specific templates might fail
-        result = subprocess.run([tool, "--Inform=General;%Format% %Duration/String3%", str(target)], capture_output=True, text=True)
+
+    try:
+        result = subprocess.run(
+            [tool, f"--Inform={inform}", str(target)],
+            capture_output=True,
+            text=True,
+            timeout=3.0,  # 3 second timeout to prevent TUI freeze
+        )
         res = (result.stdout or "").strip()
+
+        if not res:
+            # Fallback for files where track-specific templates might fail
+            result = subprocess.run(
+                [tool, "--Inform=General;%Format% %Duration/String3%", str(target)],
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+            )
+            res = (result.stdout or "").strip()
+    except subprocess.TimeoutExpired:
+        mi_summary = "MI: timeout (file too large)"
+        cache_file.write_text(mi_summary)
+        return mi_summary
 
     if not res:
         mi_summary = "MediaInfo extraction failed."
