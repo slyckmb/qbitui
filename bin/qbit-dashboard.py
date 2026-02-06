@@ -35,62 +35,112 @@ SCRIPT_NAME = "qbit-dashboard"
 VERSION = "1.6.4-2026-02-06T15-29-41"
 LAST_UPDATED = "2026-02-06"
 
-COLOR_CYAN = "\033[36m"
-COLOR_GREEN = "\033[32m"
-COLOR_RED = "\033[31m"
-COLOR_YELLOW = "\033[33m"
-COLOR_BLUE = "\033[34m"
-COLOR_MAGENTA = "\033[35m"
-COLOR_PINK = "\033[38;5;210m"
-COLOR_ORANGE = "\033[38;5;214m"
-COLOR_BRIGHT_GREEN = "\033[92m"
-COLOR_BRIGHT_CYAN = "\033[96m"
-COLOR_BRIGHT_YELLOW = "\033[93m"
-COLOR_BRIGHT_BLUE = "\033[94m"
-COLOR_BRIGHT_PURPLE = "\033[95m"
-COLOR_BRIGHT_RED = "\033[91m"
-COLOR_BRIGHT_WHITE = "\033[97m"
-COLOR_BROWN = "\033[38;5;214m"
-COLOR_GREY = "\033[38;5;245m"
-COLOR_BOLD = "\033[1m"
+# ============================================================================
+# COLOR SYSTEM - Claude Code Dark Mode Inspired
+# ============================================================================
 
-def color_hex(value: str) -> str:
-    value = value.lstrip("#")
-    r = int(value[0:2], 16)
-    g = int(value[2:4], 16)
-    b = int(value[4:6], 16)
-    return f"\033[38;2;{r};{g};{b}m"
+class ColorScheme:
+    """Color scheme management with YAML override support."""
 
+    def __init__(self, yaml_path: Optional[Path] = None):
+        """Initialize colors from YAML file or defaults."""
+        self.BOLD = "\033[1m"
+        self.DIM = "\033[2m"
+        self.UNDERLINE = "\033[4m"
+        self.RESET = "\033[0m"
 
-COLOR_BG = "\033[48;2;48;10;36m"
-COLOR_FG = color_hex("EEEEEC")
-COLOR_MUTED = color_hex("D3D7CF")
-COLOR_DIVIDER = color_hex("555753")
-COLOR_FOCUS = color_hex("729FCF")
-COLOR_TAB_ACTIVE = color_hex("FCE94F")
-COLOR_TAB_INACTIVE = color_hex("D3D7CF")
-COLOR_ACTION_DANGER = color_hex("EF2929")
-COLOR_ACTION_CONFIRM = color_hex("FCE94F")
-COLOR_STATE_DOWNLOADING = color_hex("8AE234")
-COLOR_STATE_UPLOADING = color_hex("34E2E2")
-COLOR_STATE_PAUSED = color_hex("FCE94F")
-COLOR_STATE_ERROR = color_hex("EF2929")
-COLOR_STATE_COMPLETED = color_hex("AD7FA8")
-COLOR_STATE_CHECKING = color_hex("729FCF")
-def color_bg_hex(value: str) -> str:
-    value = value.lstrip("#")
-    r = int(value[0:2], 16)
-    g = int(value[2:4], 16)
-    b = int(value[4:6], 16)
-    return f"\033[48;2;{r};{g};{b}m"
+        # Default palette (Claude Code Dark Mode inspired)
+        self._palette = {
+            'bg_primary': '#2C001E',
+            'bg_secondary': '#352840',
+            'bg_selected': '#3A2F5F',
+            'fg_primary': '#E5E7EB',
+            'fg_secondary': '#A0AEC0',
+            'fg_tertiary': '#6B7280',
+            'cyan': '#4EC9B0',
+            'blue': '#61AFEF',
+            'purple': '#C678DD',
+            'yellow': '#E5C07B',
+            'orange': '#D19A66',
+            'green': '#98C379',
+            'lavender': '#B4A5D1',
+            'error': '#E06C75',
+        }
 
-COLOR_SELECTION_FG = color_hex("FFFFFF")
-COLOR_SELECTION_BG = color_bg_hex("3465A4")
-COLOR_SELECTION = COLOR_SELECTION_BG + COLOR_SELECTION_FG
-COLOR_UNDERLINE = "\033[4m"
-COLOR_DIM = "\033[2m"
-COLOR_DEFAULT = COLOR_FG
-COLOR_RESET = "\033[0m" + COLOR_FG
+        # Load YAML override if provided
+        if yaml_path and yaml_path.exists() and yaml:
+            try:
+                with open(yaml_path) as f:
+                    config = yaml.safe_load(f)
+                    self._load_palette_from_yaml(config)
+            except Exception as e:
+                print(f"Warning: Could not load color theme: {e}", file=sys.stderr)
+
+        self._generate_ansi_codes()
+
+    def _load_palette_from_yaml(self, config: dict):
+        """Parse YAML structure and update palette."""
+        if 'palette' not in config:
+            return
+
+        palette = config['palette']
+        for category in ['background', 'foreground', 'accents', 'status']:
+            if category in palette:
+                for name, data in palette[category].items():
+                    if isinstance(data, dict) and 'hex' in data:
+                        key = f"{category[:2]}_{name}" if category in ['background', 'foreground'] else name
+                        self._palette[key] = data['hex']
+
+    def _hex_to_rgb(self, hex_color: str) -> tuple[int, int, int]:
+        """Convert hex color to RGB tuple."""
+        hex_color = hex_color.lstrip('#')
+        return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+    def _rgb_to_ansi_fg(self, r: int, g: int, b: int) -> str:
+        """Generate ANSI 24-bit foreground color."""
+        return f"\033[38;2;{r};{g};{b}m"
+
+    def _rgb_to_ansi_bg(self, r: int, g: int, b: int) -> str:
+        """Generate ANSI 24-bit background color."""
+        return f"\033[48;2;{r};{g};{b}m"
+
+    def _generate_ansi_codes(self):
+        """Generate all ANSI color codes from palette."""
+        for key, hex_val in self._palette.items():
+            r, g, b = self._hex_to_rgb(hex_val)
+            setattr(self, key.upper(), self._rgb_to_ansi_fg(r, g, b))
+
+        # Background colors
+        r, g, b = self._hex_to_rgb(self._palette['bg_selected'])
+        self.BG_SELECTED = self._rgb_to_ansi_bg(r, g, b)
+
+        # Common combinations
+        self.CYAN_BOLD = self.CYAN + self.BOLD
+        self.GREEN_BOLD = self.GREEN + self.BOLD
+        self.BLUE_BOLD = self.BLUE + self.BOLD
+        self.YELLOW_BOLD = self.YELLOW + self.BOLD
+        self.ORANGE_BOLD = self.ORANGE + self.BOLD
+        self.ERROR_BOLD = self.ERROR + self.BOLD
+        self.PURPLE_BOLD = self.PURPLE + self.BOLD
+
+        # Selection style
+        self.SELECTION = self.BG_SELECTED + self.FG_PRIMARY
+
+    def status_color(self, state: str) -> str:
+        """Map torrent state to semantic color."""
+        if state in STATE_DOWNLOAD:
+            return self.CYAN_BOLD
+        elif state in STATE_UPLOAD:
+            return self.BLUE
+        elif state in STATE_PAUSED:
+            return self.FG_SECONDARY
+        elif state in STATE_ERROR:
+            return self.ERROR_BOLD
+        elif state in STATE_CHECKING:
+            return self.BLUE
+        elif state in STATE_COMPLETED:
+            return self.GREEN
+        return self.FG_PRIMARY
 
 LOCAL_TZ = ZoneInfo("America/New_York") if ZoneInfo else timezone.utc
 PRESET_FILE = Path(__file__).parent.parent / "config" / "qbit-filter-presets.yml"
@@ -361,41 +411,61 @@ def state_group(state: str) -> str:
     return "other"
 
 
-def status_color(state: str) -> str:
+# Legacy wrapper functions - will be removed after migration
+# Note: These require colors to be initialized in main()
+def status_color(state: str, colors_instance=None) -> str:
+    """Deprecated: Use colors.status_color() instead."""
+    if colors_instance:
+        return colors_instance.status_color(state)
+    # Fallback for backward compatibility during migration
     s = (state or "").strip()
-    if s in {"error", "missingFiles"}:
-        return COLOR_STATE_ERROR
-    if s in {"downloading", "forcedDL", "metaDL"}:
-        return COLOR_STATE_DOWNLOADING
-    if s in {"uploading", "forcedUP"}:
-        return COLOR_STATE_UPLOADING
-    if s in {"pausedDL", "pausedUP"}:
-        return COLOR_STATE_PAUSED
-    if s in {"completed"}:
-        return COLOR_STATE_COMPLETED
-    if s in {"queuedDL", "queuedUP", "checkingUP", "checkingDL", "checkingResumeData", "queuedForChecking", "checking"}:
-        return COLOR_STATE_CHECKING
-    if s in {"stalledUP", "stalledDL", "allocating", "moving"}:
-        return COLOR_ORANGE
-    if not s:
-        return COLOR_FG
-    return COLOR_FG
+    if s in STATE_ERROR:
+        return "\033[38;2;224;108;117m"  # error
+    if s in STATE_DOWNLOAD:
+        return "\033[38;2;78;201;176m\033[1m"  # cyan_bold
+    if s in STATE_UPLOAD:
+        return "\033[38;2;97;175;239m"  # blue
+    if s in STATE_PAUSED:
+        return "\033[38;2;160;174;192m"  # fg_secondary
+    if s in STATE_COMPLETED:
+        return "\033[38;2;152;195;121m"  # green
+    if s in STATE_CHECKING:
+        return "\033[38;2;97;175;239m"  # blue
+    return "\033[38;2;229;231;235m"  # fg_primary
 
 
-def mode_color(mode: str) -> str:
-    colors = {
-        "i": COLOR_BRIGHT_CYAN,
-        "p": COLOR_BRIGHT_YELLOW,
-        "d": COLOR_BRIGHT_RED,
-        "c": COLOR_ORANGE,
-        "t": COLOR_PINK,
-        "v": COLOR_BRIGHT_BLUE,
-        "A": COLOR_BRIGHT_GREEN,
-        "Q": COLOR_BRIGHT_PURPLE,
-        "l": COLOR_BRIGHT_WHITE,
-        "m": COLOR_MAGENTA,
+def mode_color(mode: str, colors_instance=None) -> str:
+    """Deprecated: Use colors directly instead."""
+    if not colors_instance:
+        # Fallback for backward compatibility during migration
+        mode_map = {
+            "i": "\033[96m",  # bright_cyan
+            "p": "\033[93m",  # bright_yellow
+            "d": "\033[91m",  # bright_red
+            "c": "\033[38;5;214m",  # orange
+            "t": "\033[38;5;210m",  # pink
+            "v": "\033[94m",  # bright_blue
+            "A": "\033[92m",  # bright_green
+            "Q": "\033[95m",  # bright_purple
+            "l": "\033[97m",  # bright_white
+            "m": "\033[35m",  # magenta
+        }
+        return mode_map.get(mode, "\033[0m")
+
+    # Use new color scheme
+    mode_map = {
+        "i": colors_instance.CYAN_BOLD,
+        "p": colors_instance.YELLOW_BOLD,
+        "d": colors_instance.ERROR_BOLD,
+        "c": colors_instance.ORANGE,
+        "t": colors_instance.PURPLE,
+        "v": colors_instance.BLUE_BOLD,
+        "A": colors_instance.GREEN_BOLD,
+        "Q": colors_instance.PURPLE_BOLD,
+        "l": colors_instance.FG_PRIMARY,
+        "m": colors_instance.PURPLE,
     }
-    return colors.get(mode, COLOR_RESET)
+    return mode_map.get(mode, colors_instance.RESET)
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -884,20 +954,20 @@ def summarize_filters(filters: list[dict]) -> str:
     return " ".join(parts)
 
 
-def format_filters_line(filters: list[dict]) -> str:
+def format_filters_line(filters: list[dict], colors: ColorScheme) -> str:
     if not filters:
         return "Filters: -"
     parts = []
     for flt in filters:
         active = flt.get("enabled", True)
-        color = COLOR_PINK if active else ""
-        reset = COLOR_RESET if active else ""
+        color = colors.PURPLE if active else ""
+        reset = colors.RESET if active else ""
         if flt["type"] == "text":
             prefix = "!" if flt.get("negate") else ""
             parts.append(f"text={color}{prefix}{flt['value']}{reset}")
         elif flt["type"] == "category":
-            cat_color = COLOR_BROWN if active else ""
-            cat_reset = COLOR_RESET if active else ""
+            cat_color = colors.PURPLE if active else ""
+            cat_reset = colors.RESET if active else ""
             prefix = "!" if flt.get("negate") else ""
             parts.append(f"cat={cat_color}{prefix}{flt['value']}{cat_reset}")
         elif flt["type"] == "tag":
@@ -1350,7 +1420,11 @@ def main() -> int:
     parser.add_argument("--config", default=os.environ.get("QBITTORRENT_CONFIG_FILE"), help="Path to request-cache.yml")
     parser.add_argument("--page-size", type=int, default=int(os.environ.get("QBITTORRENT_PAGE_SIZE", "10")))
     parser.add_argument("--debug-keys", help="Write raw key sequences to a file (TTY only).")
+    parser.add_argument("--color-theme", type=Path, metavar='PATH', help='Path to YAML color theme file (overrides default colors)')
     args = parser.parse_args()
+
+    # Initialize global color scheme
+    colors = ColorScheme(yaml_path=args.color_theme)
 
     config_path = Path(args.config) if args.config else (Path(__file__).parent.parent / "config" / "request-cache.yml")
     cfg_api_url, cfg_creds = read_qbit_config(config_path)
@@ -1533,7 +1607,7 @@ def main() -> int:
         lines.append(divider_line)
         for idx, item in enumerate(page_rows_local, 0):
             selected = selection_hash == item.get("hash")
-            status_col = status_color(item.get("state") or "")
+            status_col = colors.status_color(item.get("state") or "")
             name = (item.get("name") or "")[:name_width]
             st = item.get("st") or "?"
             cat_val = str(item.get("category") or "-")
@@ -1554,19 +1628,19 @@ def main() -> int:
                     f"{cat_val:<{cat_width}} "
                     f"{hash_display:<{hash_width}}"
                 )
-                lines.append(f"{COLOR_SELECTION}{base_line}{COLOR_RESET}")
+                lines.append(f"{colors.SELECTION}{base_line}{colors.RESET}")
             else:
-                focus_col = f"{COLOR_FOCUS}{focus_marker}{COLOR_RESET}" if idx == focus_idx else " "
+                focus_col = f"{colors.CYAN}{focus_marker}{colors.RESET}" if idx == focus_idx else " "
                 base_line = (
-                    f"{focus_col:<1} {idx:<2} {status_col}{st:<2}{COLOR_RESET} "
-                    f"{status_col}{name:<{name_width}}{COLOR_RESET} "
+                    f"{focus_col:<1} {idx:<2} {status_col}{st:<2}{colors.RESET} "
+                    f"{status_col}{name:<{name_width}}{colors.RESET} "
                     f"{str(item.get('progress') or '-'): <6} "
                     f"{str(item.get('size') or '-'): <{size_width}} "
                     f"{str(item.get('dlspeed') or '-'): <8} "
                     f"{str(item.get('upspeed') or '-'): <8} "
                     f"{str(item.get('eta') or '-'): <6} "
                     f"{added_value}"
-                    f"{COLOR_BROWN}{cat_val:<{cat_width}}{COLOR_RESET} "
+                    f"{colors.PURPLE}{cat_val:<{cat_width}}{colors.RESET} "
                     f"{hash_display:<{hash_width}}"
                 )
                 lines.append(base_line)
@@ -1581,7 +1655,7 @@ def main() -> int:
                 # Use background_only=True to prevent blocking draw
                 mi_summary = get_mediainfo_summary_cached(str(item.get("hash") or ""), content_path, background_only=True)
                 indent = "     "
-                lines.append(f"{indent}{COLOR_GREY}{mi_summary}{COLOR_RESET}")
+                lines.append(f"{indent}{colors.FG_TERTIARY}{mi_summary}{colors.RESET}")
 
             if show_tags:
                 tags_raw = str(item.get("tags") or "").strip()
@@ -1589,9 +1663,11 @@ def main() -> int:
                     tag_parts = []
                     for tag in [t.strip() for t in tags_raw.split(",") if t.strip()]:
                         if "FAIL" in tag.upper():
-                            tag_parts.append(f"{COLOR_RED}{tag}{COLOR_RESET}")
+                            tag_parts.append(f"{colors.ERROR}{tag}{colors.RESET}")
+                        elif "cross-seed" in tag.lower():
+                            tag_parts.append(f"{colors.ORANGE}{tag}{colors.RESET}")
                         else:
-                            tag_parts.append(f"{COLOR_PINK}{tag}{COLOR_RESET}")
+                            tag_parts.append(f"{colors.PURPLE}{tag}{colors.RESET}")
                     tags_line = ", ".join(tag_parts)
                     indent = "     tags: "
                     width = max(40, term_w - len(indent))
@@ -1727,12 +1803,12 @@ def main() -> int:
                 term_w = terminal_width()
                 banner_line = ""
                 if banner_text and time.time() < banner_until:
-                    banner_line = f"{COLOR_ACTION_CONFIRM}{banner_text}{COLOR_RESET}"
+                    banner_line = f"{colors.YELLOW_BOLD}{banner_text}{colors.RESET}"
                 elif not selection_hash:
-                    banner_line = f"{COLOR_MUTED}Select an item.{COLOR_RESET}"
+                    banner_line = f"{colors.FG_SECONDARY}Select an item.{colors.RESET}"
                 else:
                     short_hash = (selection_hash or "")[:10]
-                    banner_line = f"{COLOR_TAB_ACTIVE}Selected:{COLOR_RESET} {selection_name} ({short_hash})"
+                    banner_line = f"{colors.CYAN_BOLD}Selected:{colors.RESET} {selection_name} ({short_hash})"
 
                 scope_label = scope.upper()
                 page_label = f"Page {page + 1}/{total_pages}"
@@ -1756,12 +1832,12 @@ def main() -> int:
 
                 if in_tab_view and selection_hash:
                     output_buffer = "\033[H\033[J" # Start with clear
-                    tui_print(f"{COLOR_DEFAULT}{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{COLOR_RESET}")
+                    tui_print(f"{colors.FG_PRIMARY}{colors.BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{colors.RESET}")
                     tui_print(f"API: {api_url}")
                     tui_print(f"Summary: {summary(cached_torrents)}")
                     tui_print(banner_line)
                     tui_print("")
-                    tui_print(f"Scope: {COLOR_FOCUS}{scope_label}{COLOR_RESET}  Sort: {COLOR_BRIGHT_PURPLE}{sort_label}{COLOR_RESET}  {page_label}")
+                    tui_print(f"Scope: {colors.CYAN}{scope_label}{colors.RESET}  Sort: {colors.PURPLE_BOLD}{sort_label}{colors.RESET}  {page_label}")
                     tui_print("")
                     selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
                     if not selected_row:
@@ -1777,9 +1853,9 @@ def main() -> int:
                         tab_labels = []
                         for label in available_tabs:
                             if label == active_label:
-                                tab_labels.append(f"{COLOR_TAB_ACTIVE}[{label}]{COLOR_RESET}")
+                                tab_labels.append(f"{colors.YELLOW_BOLD}[{label}]{colors.RESET}")
                             else:
-                                tab_labels.append(f"{COLOR_TAB_INACTIVE}{label}{COLOR_RESET}")
+                                tab_labels.append(f"{colors.FG_SECONDARY}{label}{colors.RESET}")
                         tui_print("Tabs: " + " ".join(tab_labels))
                         tui_print(divider_line)
                         tab_width = max(40, term_w - 4)
@@ -1801,12 +1877,12 @@ def main() -> int:
                 else:
                     if not have_full_draw:
                         output_buffer = "\033[H\033[J" # Start with clear
-                        tui_print(f"{COLOR_DEFAULT}{COLOR_BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{COLOR_RESET}")
+                        tui_print(f"{colors.FG_PRIMARY}{colors.BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{colors.RESET}")
                         tui_print(f"API: {api_url}")
                         tui_print(f"Summary: {summary(cached_torrents)}")
                         tui_print(banner_line)
                         tui_print("")
-                        tui_print(f"Scope: {COLOR_FOCUS}{scope_label}{COLOR_RESET}  Sort: {COLOR_BRIGHT_PURPLE}{sort_label}{COLOR_RESET}  {page_label}")
+                        tui_print(f"Scope: {colors.CYAN}{scope_label}{colors.RESET}  Sort: {colors.PURPLE_BOLD}{sort_label}{colors.RESET}  {page_label}")
                         tui_print("")
                         list_start_row = 8
                         for line in list_block_lines: tui_print(line)
@@ -1817,7 +1893,7 @@ def main() -> int:
                     else:
                         print_at(3, f"Summary: {summary(cached_torrents)}")
                         print_at(4, banner_line)
-                        print_at(6, f"Scope: {COLOR_FOCUS}{scope_label}{COLOR_RESET}  Sort: {COLOR_BRIGHT_PURPLE}{sort_label}{COLOR_RESET}  {page_label}")
+                        print_at(6, f"Scope: {colors.CYAN}{scope_label}{colors.RESET}  Sort: {colors.PURPLE_BOLD}{sort_label}{colors.RESET}  {page_label}")
                         row = list_start_row
                         # Clear ONLY if new list is shorter
                         current_height = len(list_block_lines) + 1
@@ -1834,14 +1910,14 @@ def main() -> int:
 
                 # Render Footer with absolute positioning
                 row = footer_row
-                print_at(row, format_filters_line(filters)); row += 1
+                print_at(row, format_filters_line(filters, colors)); row += 1
                 print_at(row, divider_line); row += 1
 
-                list_active = f"{COLOR_TAB_ACTIVE}List{COLOR_RESET}" if not in_tab_view else f"{COLOR_MUTED}List{COLOR_RESET}"
-                tabs_active = f"{COLOR_TAB_ACTIVE}Tabs{COLOR_RESET}" if in_tab_view else f"{COLOR_MUTED}Tabs{COLOR_RESET}"
-                actions_line = f"P=Pause/Resume V=Verify C=Category E=Tags A=Trackers Q=QC {COLOR_ACTION_DANGER}D=Delete{COLOR_RESET}"
+                list_active = f"{colors.CYAN_BOLD}List{colors.RESET}" if not in_tab_view else f"{colors.FG_SECONDARY}List{colors.RESET}"
+                tabs_active = f"{colors.CYAN_BOLD}Tabs{colors.RESET}" if in_tab_view else f"{colors.FG_SECONDARY}Tabs{colors.RESET}"
+                actions_line = f"P=Pause/Resume V=Verify C=Category E=Tags A=Trackers Q=QC {colors.ORANGE_BOLD}D=Delete{colors.RESET}"
                 if not selection_hash:
-                    actions_line = f"{COLOR_DIM}P=Pause/Resume V=Verify C=Category E=Tags A=Trackers Q=QC D=Delete{COLOR_RESET}"
+                    actions_line = f"{colors.DIM}P=Pause/Resume V=Verify C=Category E=Tags A=Trackers Q=QC D=Delete{colors.RESET}"
                 
                 print_at(row, f"{list_active}: a=all w=down u=up v=paused e=done g=err  s=sort o=order  f=text c=cat #=tag l=line  x=filters p=presets  z=reset"); row += 1
                 if selection_hash or in_tab_view:
@@ -1849,8 +1925,8 @@ def main() -> int:
                 print_at(row, f"Actions: {actions_line}"); row += 1
                 print_at(row, f"View: t=tags d=added h=hash m=mediainfo  Nav: ' up  / down  , prev  . next  Space/Enter selects/clears  0-9 selects  `=debug"); row += 1
                 print_at(row, divider_line); row += 1
-                
-                print_at(row, f"Last Key: {COLOR_CYAN}{last_key_debug}{COLOR_RESET}\033[J")
+
+                print_at(row, f"Last Key: {colors.CYAN}{last_key_debug}{colors.RESET}\033[J")
                 tui_flush()
                 need_redraw = False
 
