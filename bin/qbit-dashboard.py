@@ -147,6 +147,7 @@ PRESET_FILE = Path(__file__).parent.parent / "config" / "qbit-filter-presets.yml
 TRACKERS_LIST_URL = "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt"
 QC_TAG_TOOL = Path(__file__).resolve().parent / "media_qc_tag.py"
 QC_LOG_DIR = Path.home() / ".logs" / "media_qc"
+ACTIVE_QC_PROCESSES = {}  # hash -> (pid, start_time)
 
 MEDIA_EXTS = {
     # Video
@@ -374,6 +375,22 @@ def fetch_public_trackers(url: str) -> list[str]:
 def spawn_media_qc(hash_value: str) -> str:
     if not QC_TAG_TOOL.exists():
         return f"Missing tool ({QC_TAG_TOOL})"
+
+    # Clean up completed processes
+    for h in list(ACTIVE_QC_PROCESSES.keys()):
+        pid, _ = ACTIVE_QC_PROCESSES[h]
+        try:
+            os.kill(pid, 0)  # Check if process exists (doesn't actually kill)
+        except OSError:
+            # Process doesn't exist, remove from tracking
+            del ACTIVE_QC_PROCESSES[h]
+
+    # Check if QC is already running for this hash
+    if hash_value in ACTIVE_QC_PROCESSES:
+        pid, start_time = ACTIVE_QC_PROCESSES[hash_value]
+        elapsed = int(time.time() - start_time)
+        return f"QC already running (PID {pid}, {elapsed}s ago)"
+
     QC_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = QC_LOG_DIR / f"qc_tag_{hash_value[:8]}.log"
     cmd = [sys.executable, str(QC_TAG_TOOL), "--hash", hash_value, "--apply"]
@@ -381,15 +398,17 @@ def spawn_media_qc(hash_value: str) -> str:
         handle.write(f"\n=== qc-tag-media {hash_value} @ {datetime.now(LOCAL_TZ).isoformat()} ===\n")
         handle.write(f"cmd={' '.join(cmd)}\n")
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdout=log_path.open("a"),
             stderr=log_path.open("a"),
             start_new_session=True,
         )
+        # Track this process
+        ACTIVE_QC_PROCESSES[hash_value] = (proc.pid, time.time())
     except Exception as exc:
         return f"Failed ({exc})"
-    return f"Queued ({log_path})"
+    return f"Queued (PID {proc.pid}, log: {log_path})"
 
 
 def state_group(state: str) -> str:
