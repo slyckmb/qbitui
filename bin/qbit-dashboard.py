@@ -880,6 +880,11 @@ def draw_header_v2(
             stats.append(f"{colors.ORANGE}[{len(active)} filters]{colors.RESET}")
 
     stats_line = "  ".join(stats)
+    # Pad stats line to match border width
+    stats_visible = visible_len(stats_line)
+    padding_needed = (width - 4) - stats_visible  # -4 for "║ " and " ║"
+    if padding_needed > 0:
+        stats_line += " " * padding_needed
     lines.append(f"║ {stats_line} ║")
     lines.append(f"╚{'═' * (width - 2)}╝")
 
