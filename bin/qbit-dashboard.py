@@ -2068,13 +2068,28 @@ def main() -> int:
 
                 if in_tab_view and selection_hash:
                     output_buffer = "\033[H\033[J" # Start with clear
-                    tui_print(f"{colors.FG_PRIMARY}{colors.BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{colors.RESET}")
-                    tui_print(f"API: {api_url}")
-                    tui_print(f"Summary: {summary(cached_torrents)}")
-                    tui_print(banner_line)
-                    tui_print("")
-                    tui_print(f"Scope: {colors.CYAN}{scope_label}{colors.RESET}  Sort: {colors.PURPLE_BOLD}{sort_label}{colors.RESET}  {page_label}")
-                    tui_print("")
+
+                    # Use new v2 header
+                    header_lines = draw_header_v2(
+                        colors=colors,
+                        api_url=api_url,
+                        version=VERSION,
+                        torrents=cached_torrents,
+                        scope=scope,
+                        sort_field=sort_fields[sort_index],
+                        sort_desc=sort_desc,
+                        page=page,
+                        total_pages=total_pages,
+                        filters=filters,
+                        width=content_width
+                    )
+                    for line in header_lines:
+                        tui_print(line)
+
+                    # Banner/selection info (if needed)
+                    if banner_line:
+                        tui_print(banner_line)
+                        tui_print("")
                     selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
                     if not selected_row:
                         tui_print("Selection not available on this page.")
