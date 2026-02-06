@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.7.3"
+VERSION = "1.7.4"
 LAST_UPDATED = "2026-02-06"
 
 # ============================================================================
@@ -491,24 +491,8 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def visible_len(value: str) -> int:
-    """Calculate display width accounting for ANSI codes and emoji."""
-    plain = ANSI_RE.sub("", value)
-
-    # Account for emoji and other wide characters
-    # Most emoji and East Asian characters display as 2-wide
-    width = 0
-    for char in plain:
-        code = ord(char)
-        # Emoji ranges (simplified - covers most common emoji)
-        if (0x1F300 <= code <= 0x1F9FF or  # Misc Symbols and Pictographs, Emoticons, etc.
-            0x2600 <= code <= 0x26FF or    # Misc symbols (⚡ etc.)
-            0x2700 <= code <= 0x27BF or    # Dingbats
-            0xFE00 <= code <= 0xFE0F or    # Variation Selectors
-            0x1F600 <= code <= 0x1F64F):   # Emoticons
-            width += 2
-        else:
-            width += 1
-    return width
+    """Calculate display width by stripping ANSI codes."""
+    return len(ANSI_RE.sub("", value))
 
 
 def wrap_ansi(value: str, width: int) -> list[str]:
@@ -847,10 +831,10 @@ def draw_header_v2(
         elif speed < 1024 * 1024: return f"{speed / 1024:.1f} KB/s"
         else: return f"{speed / (1024 * 1024):.1f} MB/s"
 
-    # Line 1: Title bar (using visible_len for emoji-aware width calculation)
-    left = f"{colors.CYAN_BOLD}⚡ QBITTORRENT TUI{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}"
-    center = f"{colors.FG_SECONDARY}📡 {colors.BLUE}{api_url}{colors.RESET}"
-    right = f"{colors.FG_SECONDARY}⏰ {datetime.now().strftime('%Y-%m-%d')}{colors.RESET}"
+    # Line 1: Title bar (ASCII chars for consistent width)
+    left = f"{colors.CYAN_BOLD}* QBITTORRENT TUI{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}"
+    center = f"{colors.FG_SECONDARY}@ {colors.BLUE}{api_url}{colors.RESET}"
+    right = f"{colors.FG_SECONDARY}{datetime.now().strftime('%Y-%m-%d')}{colors.RESET}"
 
     # Calculate spacing using visible_len (accounts for emoji width)
     left_visible = visible_len(left)
@@ -876,7 +860,7 @@ def draw_header_v2(
 
     # Real-time bandwidth (if active) - always show both for consistency
     if total_dl > 0 or total_ul > 0:
-        stats.append(f"{colors.CYAN}⚡{colors.RESET}")
+        stats.append(f"{colors.CYAN}*{colors.RESET}")
         dl_color = colors.CYAN_BOLD if total_dl > 0 else colors.FG_TERTIARY
         stats.append(f"{colors.CYAN}↓ {dl_color}{fmt_speed(total_dl)}{colors.RESET}")
         ul_color = colors.BLUE_BOLD if total_ul > 0 else colors.FG_TERTIARY
