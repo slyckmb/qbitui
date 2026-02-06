@@ -921,7 +921,8 @@ def draw_footer_v2(
             actions.append(f"{colors.FG_TERTIARY}{colors.DIM}(Select torrent for actions){colors.RESET}")
 
         actions_line = f"{colors.FG_SECONDARY}ACTIONS:{colors.RESET} " + "  ".join(actions)
-        lines.append(f"║ {actions_line} ║")
+        padding = width - visible_len(actions_line) - 4  # -4 for borders and spaces
+        lines.append(f"║ {actions_line}{' ' * max(0, padding)} ║")
 
         # Line 2: Navigation and View
         nav_parts = [
@@ -943,11 +944,13 @@ def draw_footer_v2(
             f"  {colors.FG_SECONDARY}│ VIEW:{colors.RESET} " +
             "  ".join(view_parts)
         )
-        lines.append(f"║ {nav_line} ║")
+        padding = width - visible_len(nav_line) - 4
+        lines.append(f"║ {nav_line}{' ' * max(0, padding)} ║")
 
     elif context == "trackers":
         title_line = f"{colors.CYAN_BOLD}TRACKER VIEW{colors.RESET}"
-        lines.append(f"║ {title_line} ║")
+        padding = width - visible_len(title_line) - 4
+        lines.append(f"║ {title_line}{' ' * max(0, padding)} ║")
 
         actions = [
             f"{colors.CYAN_BOLD}A{colors.RESET}{colors.FG_SECONDARY}=Add{colors.RESET}",
@@ -963,11 +966,13 @@ def draw_footer_v2(
         ]
 
         cmd_line = "  ".join(actions) + f"  {colors.FG_SECONDARY}│{colors.RESET}  " + "  ".join(nav)
-        lines.append(f"║ {cmd_line} ║")
+        padding = width - visible_len(cmd_line) - 4
+        lines.append(f"║ {cmd_line}{' ' * max(0, padding)} ║")
 
     elif context == "mediainfo":
         title_line = f"{colors.LAVENDER}MEDIAINFO VIEW{colors.RESET}"
-        lines.append(f"║ {title_line} ║")
+        padding = width - visible_len(title_line) - 4
+        lines.append(f"║ {title_line}{' ' * max(0, padding)} ║")
 
         actions = [
             f"{colors.CYAN_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Next{colors.RESET}",
@@ -976,7 +981,8 @@ def draw_footer_v2(
         ]
 
         cmd_line = "  ".join(actions)
-        lines.append(f"║ {cmd_line} ║")
+        padding = width - visible_len(cmd_line) - 4
+        lines.append(f"║ {cmd_line}{' ' * max(0, padding)} ║")
 
     lines.append(f"╚{'═' * (width - 2)}╝")
 
@@ -2148,22 +2154,35 @@ def main() -> int:
 
                 # Render Footer with absolute positioning
                 row = footer_row
-                print_at(row, format_filters_line(filters, colors)); row += 1
-                print_at(row, divider_line); row += 1
 
-                list_active = f"{colors.CYAN_BOLD}List{colors.RESET}" if not in_tab_view else f"{colors.FG_SECONDARY}List{colors.RESET}"
-                tabs_active = f"{colors.CYAN_BOLD}Tabs{colors.RESET}" if in_tab_view else f"{colors.FG_SECONDARY}Tabs{colors.RESET}"
-                actions_line = f"P=Pause/Resume V=Verify C=Category E=Tags A=Trackers Q=QC {colors.ORANGE_BOLD}D=Delete{colors.RESET}"
-                if not selection_hash:
-                    actions_line = f"{colors.DIM}P=Pause/Resume V=Verify C=Category E=Tags A=Trackers Q=QC D=Delete{colors.RESET}"
-                
-                print_at(row, f"{list_active}: a=all w=down u=up v=paused e=done g=err  s=sort o=order  f=text c=cat #=tag l=line  x=filters p=presets  z=reset"); row += 1
-                if selection_hash or in_tab_view:
-                    print_at(row, f"{tabs_active}: Tab=cycle (off after last)  Ctrl-Tab=cycle  T=cycle  Esc=back"); row += 1
-                print_at(row, f"Actions: {actions_line}"); row += 1
-                print_at(row, f"View: t=tags d=added h=hash m=mediainfo  Nav: ' up  / down  , prev  . next  Space/Enter selects/clears  0-9 selects  `=debug"); row += 1
-                print_at(row, divider_line); row += 1
+                # Show filters if any active
+                if filters:
+                    print_at(row, format_filters_line(filters, colors)); row += 1
+                    print_at(row, divider_line); row += 1
 
+                # Determine footer context
+                footer_context = "main"
+                if in_tab_view and selection_hash:
+                    active_label = tabs[active_tab] if active_tab < len(tabs) else "Info"
+                    if active_label == "Trackers":
+                        footer_context = "trackers"
+                    elif active_label == "MediaInfo":
+                        footer_context = "mediainfo"
+
+                # Render new v2 footer
+                footer_lines = draw_footer_v2(
+                    colors=colors,
+                    context=footer_context,
+                    width=content_width,
+                    has_selection=bool(selection_hash)
+                )
+
+                for line in footer_lines:
+                    print_at(row, line)
+                    row += 1
+
+                # Debug key display
+                print_at(row, divider_line); row += 1
                 print_at(row, f"Last Key: {colors.CYAN}{last_key_debug}{colors.RESET}\033[J")
                 tui_flush()
                 need_redraw = False
