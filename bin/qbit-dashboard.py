@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 LAST_UPDATED = "2026-02-06"
 
 # ============================================================================
@@ -851,9 +851,9 @@ def draw_header_v2(
     else:
         title_line = f"{left}  {center}  {right}"
 
-    lines.append(f"╔{'═' * (width - 2)}╗")
-    lines.append(f"║ {title_line} ║")
-    lines.append(f"╠{'═' * (width - 2)}╣")
+    lines.append(f"┌{'─' * (width - 2)}┐")
+    lines.append(f"│ {title_line} │")
+    lines.append(f"├{'─' * (width - 2)}┤")
 
     # Line 2: Stats dashboard
     stats = []
@@ -901,11 +901,11 @@ def draw_header_v2(
     stats_line = "  ".join(stats)
     # Pad stats line to match border width
     stats_visible = visible_len(stats_line)
-    padding_needed = (width - 4) - stats_visible  # -4 for "║ " and " ║"
+    padding_needed = (width - 4) - stats_visible  # -4 for "│ " and " │"
     if padding_needed > 0:
         stats_line += " " * padding_needed
-    lines.append(f"║ {stats_line} ║")
-    lines.append(f"╚{'═' * (width - 2)}╝")
+    lines.append(f"│ {stats_line} │")
+    lines.append(f"└{'─' * (width - 2)}┘")
 
     return lines
 
@@ -925,7 +925,7 @@ def draw_footer_v2(
         has_selection: Whether a torrent is selected
     """
     lines = []
-    lines.append(f"╔{'═' * (width - 2)}╗")
+    lines.append(f"┌{'─' * (width - 2)}┐")
 
     if context == "main":
         # Line 1: Actions
@@ -946,7 +946,7 @@ def draw_footer_v2(
 
         actions_line = f"{colors.FG_SECONDARY}ACTIONS:{colors.RESET} " + "  ".join(actions)
         padding = width - visible_len(actions_line) - 4  # -4 for borders and spaces
-        lines.append(f"║ {actions_line}{' ' * max(0, padding)} ║")
+        lines.append(f"│ {actions_line}{' ' * max(0, padding)} │")
 
         # Line 2: Navigation and View
         nav_parts = [
@@ -969,12 +969,12 @@ def draw_footer_v2(
             "  ".join(view_parts)
         )
         padding = width - visible_len(nav_line) - 4
-        lines.append(f"║ {nav_line}{' ' * max(0, padding)} ║")
+        lines.append(f"│ {nav_line}{' ' * max(0, padding)} │")
 
     elif context == "trackers":
         title_line = f"{colors.CYAN_BOLD}TRACKER VIEW{colors.RESET}"
         padding = width - visible_len(title_line) - 4
-        lines.append(f"║ {title_line}{' ' * max(0, padding)} ║")
+        lines.append(f"│ {title_line}{' ' * max(0, padding)} │")
 
         actions = [
             f"{colors.CYAN_BOLD}A{colors.RESET}{colors.FG_SECONDARY}=Add{colors.RESET}",
@@ -991,12 +991,12 @@ def draw_footer_v2(
 
         cmd_line = "  ".join(actions) + f"  {colors.FG_SECONDARY}│{colors.RESET}  " + "  ".join(nav)
         padding = width - visible_len(cmd_line) - 4
-        lines.append(f"║ {cmd_line}{' ' * max(0, padding)} ║")
+        lines.append(f"│ {cmd_line}{' ' * max(0, padding)} │")
 
     elif context == "mediainfo":
         title_line = f"{colors.LAVENDER}MEDIAINFO VIEW{colors.RESET}"
         padding = width - visible_len(title_line) - 4
-        lines.append(f"║ {title_line}{' ' * max(0, padding)} ║")
+        lines.append(f"│ {title_line}{' ' * max(0, padding)} │")
 
         actions = [
             f"{colors.CYAN_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Next{colors.RESET}",
@@ -1006,9 +1006,9 @@ def draw_footer_v2(
 
         cmd_line = "  ".join(actions)
         padding = width - visible_len(cmd_line) - 4
-        lines.append(f"║ {cmd_line}{' ' * max(0, padding)} ║")
+        lines.append(f"│ {cmd_line}{' ' * max(0, padding)} │")
 
-    lines.append(f"╚{'═' * (width - 2)}╝")
+    lines.append(f"└{'─' * (width - 2)}┘")
 
     return lines
 
