@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.7.2"
+VERSION = "1.7.3"
 LAST_UPDATED = "2026-02-06"
 
 # ============================================================================
@@ -847,19 +847,18 @@ def draw_header_v2(
         elif speed < 1024 * 1024: return f"{speed / 1024:.1f} KB/s"
         else: return f"{speed / (1024 * 1024):.1f} MB/s"
 
-    # Line 1: Title bar
+    # Line 1: Title bar (using visible_len for emoji-aware width calculation)
     left = f"{colors.CYAN_BOLD}⚡ QBITTORRENT TUI{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}"
     center = f"{colors.FG_SECONDARY}📡 {colors.BLUE}{api_url}{colors.RESET}"
     right = f"{colors.FG_SECONDARY}⏰ {datetime.now().strftime('%Y-%m-%d')}{colors.RESET}"
 
-    # Calculate spacing (strip ANSI for length)
-    ansi_pattern = re.compile(r'\033\[[0-9;]+m')
-    left_plain = ansi_pattern.sub('', left)
-    center_plain = ansi_pattern.sub('', center)
-    right_plain = ansi_pattern.sub('', right)
+    # Calculate spacing using visible_len (accounts for emoji width)
+    left_visible = visible_len(left)
+    center_visible = visible_len(center)
+    right_visible = visible_len(right)
 
-    total_plain = len(left_plain) + len(center_plain) + len(right_plain)
-    remaining = width - total_plain - 4
+    total_visible = left_visible + center_visible + right_visible
+    remaining = (width - 4) - total_visible  # -4 for "│ " and " │"
 
     if remaining > 0:
         left_pad = remaining // 2
@@ -867,15 +866,6 @@ def draw_header_v2(
         title_line = f"{left}{' ' * left_pad}{center}{' ' * right_pad}{right}"
     else:
         title_line = f"{left}  {center}  {right}"
-
-    # Fix padding to account for emoji display width (emojis render as 2-wide)
-    title_visible = visible_len(title_line)
-    padding_needed = (width - 4) - title_visible  # -4 for "│ " and " │"
-    if padding_needed > 0:
-        title_line += " " * padding_needed
-    elif padding_needed < 0:
-        # Too long, trim from right
-        title_line = title_line[:padding_needed]
 
     lines.append(f"┌{'─' * (width - 2)}┐")
     lines.append(f"│ {title_line} │")
