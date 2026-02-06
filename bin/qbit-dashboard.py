@@ -839,13 +839,13 @@ def draw_header_v2(
     # Line 2: Stats dashboard
     stats = []
 
-    # Real-time bandwidth (if active)
+    # Real-time bandwidth (if active) - always show both for consistency
     if total_dl > 0 or total_ul > 0:
         stats.append(f"{colors.CYAN}⚡{colors.RESET}")
-        if total_dl > 0:
-            stats.append(f"{colors.CYAN}↓ {colors.CYAN_BOLD}{fmt_speed(total_dl)}{colors.RESET}")
-        if total_ul > 0:
-            stats.append(f"{colors.BLUE}↑ {colors.BLUE_BOLD}{fmt_speed(total_ul)}{colors.RESET}")
+        dl_color = colors.CYAN_BOLD if total_dl > 0 else colors.FG_TERTIARY
+        stats.append(f"{colors.CYAN}↓ {dl_color}{fmt_speed(total_dl)}{colors.RESET}")
+        ul_color = colors.BLUE_BOLD if total_ul > 0 else colors.FG_TERTIARY
+        stats.append(f"{colors.BLUE}↑ {ul_color}{fmt_speed(total_ul)}{colors.RESET}")
         stats.append(f"{colors.FG_SECONDARY}│{colors.RESET}")
 
     # Counts
