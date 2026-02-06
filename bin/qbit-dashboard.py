@@ -32,8 +32,8 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.6.3-2026-02-04T14-48-27.678302"
-LAST_UPDATED = "2026-02-04"
+VERSION = "1.6.4-2026-02-06T15-29-41"
+LAST_UPDATED = "2026-02-06"
 
 COLOR_CYAN = "\033[36m"
 COLOR_GREEN = "\033[32m"
@@ -302,6 +302,8 @@ def qbit_request(opener: urllib.request.OpenerDirector, api_url: str, method: st
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
         return f"HTTP {exc.code}: {body}".strip()
+    except Exception as exc:
+        return f"Error: {exc}"
 
 
 def fetch_public_trackers(url: str) -> list[str]:
@@ -1658,15 +1660,19 @@ def main() -> int:
             data_changed = False
             if not cached_rows or (now - cache_time) >= fetch_interval:
                 raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/info")
-                try:
-                    torrents = json.loads(raw) if raw else []
-                except json.JSONDecodeError:
-                    torrents = []
-                rows = build_rows(torrents)
-                cached_torrents = torrents
-                cached_rows = rows
-                cache_time = now
-                data_changed = True
+                if raw.startswith("Error:") or raw.startswith("HTTP "):
+                    set_banner(f"Network error: {raw}")
+                    cache_time = now
+                else:
+                    try:
+                        torrents = json.loads(raw) if raw else []
+                        rows = build_rows(torrents)
+                        cached_torrents = torrents
+                        cached_rows = rows
+                        data_changed = True
+                    except json.JSONDecodeError:
+                        set_banner("Error: Invalid JSON response")
+                    cache_time = now
 
             rows_to_render = cached_rows
             if scope != "all":
