@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.6.4-2026-02-06T15-29-41"
+VERSION = "1.7.0"
 LAST_UPDATED = "2026-02-06"
 
 # ============================================================================
