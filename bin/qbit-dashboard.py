@@ -550,6 +550,18 @@ def truncate(value: str, max_len: int) -> str:
 
 
 CACHE_DIR = Path(__file__).parent.parent / "cache" / "mediainfo"
+MI_CACHE_MAX_ITEMS = 1000  # Limit queue to 1000 items to prevent memory leak
+MI_CACHE_MAX_AGE_SECONDS = 86400  # 24 hours
+
+
+def get_content_path(torrent_raw: dict) -> str:
+    """Extract content path from torrent metadata."""
+    content_path = torrent_raw.get("content_path")
+    if not content_path:
+        save_path = torrent_raw.get("save_path") or ""
+        item_name = torrent_raw.get("name") or ""
+        content_path = str(Path(save_path) / item_name) if save_path and item_name else ""
+    return content_path
 
 
 def get_largest_media_file(content_path: str) -> Optional[Path]:
@@ -754,6 +766,221 @@ def summary(torrents: list[dict]) -> str:
         else:
             counts["other"] += 1
     return " ".join([f"{k}:{v}" for k, v in counts.items()])
+
+
+# ============================================================================
+# HEADER & FOOTER REDESIGN (v1.7.0)
+# ============================================================================
+
+def draw_header_v2(
+    colors: ColorScheme,
+    api_url: str,
+    version: str,
+    torrents: list[dict],
+    scope: str,
+    sort_field: str,
+    sort_desc: bool,
+    page: int,
+    total_pages: int,
+    filters: list[dict],
+    width: int
+) -> list[str]:
+    """
+    Render professional 3-line header.
+
+    Line 1: App branding + API endpoint + date
+    Line 2: Stats dashboard with real-time bandwidth
+    Line 3: Border
+    """
+    lines = []
+
+    # Calculate stats
+    downloading = sum(1 for t in torrents if t.get("state") in STATE_DOWNLOAD)
+    seeding = sum(1 for t in torrents if t.get("state") in STATE_UPLOAD)
+    paused = sum(1 for t in torrents if t.get("state") in STATE_PAUSED)
+    completed = sum(1 for t in torrents if t.get("progress", 0) == 1.0)
+    errors = sum(1 for t in torrents if t.get("state") in STATE_ERROR)
+
+    # Calculate bandwidth
+    total_dl = sum(t.get("dlspeed", 0) for t in torrents)
+    total_ul = sum(t.get("upspeed", 0) for t in torrents)
+
+    def fmt_speed(speed: int) -> str:
+        if speed == 0: return "0"
+        elif speed < 1024: return f"{speed} B/s"
+        elif speed < 1024 * 1024: return f"{speed / 1024:.1f} KB/s"
+        else: return f"{speed / (1024 * 1024):.1f} MB/s"
+
+    # Line 1: Title bar
+    left = f"{colors.CYAN_BOLD}⚡ QBITTORRENT TUI{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}"
+    center = f"{colors.FG_SECONDARY}📡 {colors.BLUE}{api_url}{colors.RESET}"
+    right = f"{colors.FG_SECONDARY}⏰ {datetime.now().strftime('%Y-%m-%d')}{colors.RESET}"
+
+    # Calculate spacing (strip ANSI for length)
+    ansi_pattern = re.compile(r'\033\[[0-9;]+m')
+    left_plain = ansi_pattern.sub('', left)
+    center_plain = ansi_pattern.sub('', center)
+    right_plain = ansi_pattern.sub('', right)
+
+    total_plain = len(left_plain) + len(center_plain) + len(right_plain)
+    remaining = width - total_plain - 4
+
+    if remaining > 0:
+        left_pad = remaining // 2
+        right_pad = remaining - left_pad
+        title_line = f"{left}{' ' * left_pad}{center}{' ' * right_pad}{right}"
+    else:
+        title_line = f"{left}  {center}  {right}"
+
+    lines.append(f"╔{'═' * (width - 2)}╗")
+    lines.append(f"║ {title_line} ║")
+    lines.append(f"╠{'═' * (width - 2)}╣")
+
+    # Line 2: Stats dashboard
+    stats = []
+
+    # Real-time bandwidth (if active)
+    if total_dl > 0 or total_ul > 0:
+        stats.append(f"{colors.CYAN}⚡{colors.RESET}")
+        if total_dl > 0:
+            stats.append(f"{colors.CYAN}↓ {colors.CYAN_BOLD}{fmt_speed(total_dl)}{colors.RESET}")
+        if total_ul > 0:
+            stats.append(f"{colors.BLUE}↑ {colors.BLUE_BOLD}{fmt_speed(total_ul)}{colors.RESET}")
+        stats.append(f"{colors.FG_SECONDARY}│{colors.RESET}")
+
+    # Counts
+    stats.append(f"{colors.CYAN}↓ {colors.CYAN_BOLD}{downloading}{colors.RESET}")
+    stats.append(f"{colors.BLUE}↑ {colors.BLUE_BOLD}{seeding}{colors.RESET}")
+    stats.append(f"{colors.FG_SECONDARY}⏸ {paused}{colors.RESET}")
+    stats.append(f"{colors.GREEN}✓ {colors.GREEN_BOLD}{completed}{colors.RESET}")
+
+    if errors > 0:
+        stats.append(f"{colors.ERROR}✗ {colors.ERROR_BOLD}{errors}{colors.RESET}")
+    else:
+        stats.append(f"{colors.FG_TERTIARY}{colors.DIM}✗ 0{colors.RESET}")
+
+    stats.append(f"{colors.FG_SECONDARY}│{colors.RESET}")
+
+    # Scope/Sort/Pagination
+    scope_display = scope.upper() if scope != "all" else "ALL"
+    stats.append(f"{colors.FG_SECONDARY}Showing: {colors.YELLOW_BOLD}{scope_display}{colors.RESET}")
+    stats.append(f"{colors.FG_SECONDARY}│{colors.RESET}")
+
+    sort_arrow = "↓" if sort_desc else "↑"
+    stats.append(f"{colors.FG_SECONDARY}Sort: {colors.YELLOW}{sort_field} {sort_arrow}{colors.RESET}")
+    stats.append(f"{colors.FG_SECONDARY}│{colors.RESET}")
+
+    stats.append(f"{colors.FG_SECONDARY}Pg {page + 1}/{total_pages}{colors.RESET}")
+
+    # Active filters indicator
+    if filters:
+        active = [f for f in filters if f.get("enabled", True)]
+        if active:
+            stats.append(f"{colors.FG_SECONDARY}│{colors.RESET}")
+            stats.append(f"{colors.ORANGE}[{len(active)} filters]{colors.RESET}")
+
+    stats_line = "  ".join(stats)
+    lines.append(f"║ {stats_line} ║")
+    lines.append(f"╚{'═' * (width - 2)}╝")
+
+    return lines
+
+
+def draw_footer_v2(
+    colors: ColorScheme,
+    context: str,
+    width: int,
+    has_selection: bool = False
+) -> list[str]:
+    """
+    Render context-sensitive grouped footer.
+
+    Args:
+        context: 'main', 'trackers', or 'mediainfo'
+        width: Terminal width
+        has_selection: Whether a torrent is selected
+    """
+    lines = []
+    lines.append(f"╔{'═' * (width - 2)}╗")
+
+    if context == "main":
+        # Line 1: Actions
+        actions = []
+
+        if has_selection:
+            actions.extend([
+                f"{colors.CYAN_BOLD}P{colors.RESET}{colors.FG_SECONDARY}=Pause{colors.RESET}",
+                f"{colors.CYAN_BOLD}V{colors.RESET}{colors.FG_SECONDARY}=Verify{colors.RESET}",
+                f"{colors.CYAN_BOLD}C{colors.RESET}{colors.FG_SECONDARY}=Category{colors.RESET}",
+                f"{colors.CYAN_BOLD}E{colors.RESET}{colors.FG_SECONDARY}=Tags{colors.RESET}",
+                f"{colors.CYAN_BOLD}A{colors.RESET}{colors.FG_SECONDARY}=Trackers{colors.RESET}",
+                f"{colors.CYAN_BOLD}Q{colors.RESET}{colors.FG_SECONDARY}=QC{colors.RESET}",
+                f"{colors.ORANGE_BOLD}D{colors.RESET}{colors.FG_SECONDARY}=Delete{colors.RESET}",
+            ])
+        else:
+            actions.append(f"{colors.FG_TERTIARY}{colors.DIM}(Select torrent for actions){colors.RESET}")
+
+        actions_line = f"{colors.FG_SECONDARY}ACTIONS:{colors.RESET} " + "  ".join(actions)
+        lines.append(f"║ {actions_line} ║")
+
+        # Line 2: Navigation and View
+        nav_parts = [
+            f"{colors.YELLOW_BOLD}↑/↓{colors.RESET}{colors.FG_SECONDARY}=Move{colors.RESET}",
+            f"{colors.YELLOW_BOLD}PgUp/Dn{colors.RESET}{colors.FG_SECONDARY}=Page{colors.RESET}",
+            f"{colors.YELLOW_BOLD}Space{colors.RESET}{colors.FG_SECONDARY}=Select{colors.RESET}",
+            f"{colors.BLUE_BOLD}Enter{colors.RESET}{colors.FG_SECONDARY}=Details{colors.RESET}",
+            f"{colors.YELLOW_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Tabs{colors.RESET}",
+        ]
+
+        view_parts = [
+            f"{colors.PURPLE_BOLD}?{colors.RESET}{colors.FG_SECONDARY}=Help{colors.RESET}",
+            f"{colors.PURPLE_BOLD}q{colors.RESET}{colors.FG_SECONDARY}=Quit{colors.RESET}",
+        ]
+
+        nav_line = (
+            f"{colors.FG_SECONDARY}NAVIGATE:{colors.RESET} " +
+            "  ".join(nav_parts) +
+            f"  {colors.FG_SECONDARY}│ VIEW:{colors.RESET} " +
+            "  ".join(view_parts)
+        )
+        lines.append(f"║ {nav_line} ║")
+
+    elif context == "trackers":
+        title_line = f"{colors.CYAN_BOLD}TRACKER VIEW{colors.RESET}"
+        lines.append(f"║ {title_line} ║")
+
+        actions = [
+            f"{colors.CYAN_BOLD}A{colors.RESET}{colors.FG_SECONDARY}=Add{colors.RESET}",
+            f"{colors.ORANGE_BOLD}D{colors.RESET}{colors.FG_SECONDARY}=Delete{colors.RESET}",
+            f"{colors.CYAN_BOLD}E{colors.RESET}{colors.FG_SECONDARY}=Edit{colors.RESET}",
+            f"{colors.CYAN_BOLD}R{colors.RESET}{colors.FG_SECONDARY}=Refresh{colors.RESET}",
+        ]
+
+        nav = [
+            f"{colors.YELLOW_BOLD}↑/↓{colors.RESET}{colors.FG_SECONDARY}=Select{colors.RESET}",
+            f"{colors.PURPLE_BOLD}Esc{colors.RESET}{colors.FG_SECONDARY}=Back{colors.RESET}",
+            f"{colors.PURPLE_BOLD}?{colors.RESET}{colors.FG_SECONDARY}=Help{colors.RESET}",
+        ]
+
+        cmd_line = "  ".join(actions) + f"  {colors.FG_SECONDARY}│{colors.RESET}  " + "  ".join(nav)
+        lines.append(f"║ {cmd_line} ║")
+
+    elif context == "mediainfo":
+        title_line = f"{colors.LAVENDER}MEDIAINFO VIEW{colors.RESET}"
+        lines.append(f"║ {title_line} ║")
+
+        actions = [
+            f"{colors.CYAN_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Next{colors.RESET}",
+            f"{colors.PURPLE_BOLD}Esc{colors.RESET}{colors.FG_SECONDARY}=Back{colors.RESET}",
+            f"{colors.PURPLE_BOLD}?{colors.RESET}{colors.FG_SECONDARY}=Help{colors.RESET}",
+        ]
+
+        cmd_line = "  ".join(actions)
+        lines.append(f"║ {cmd_line} ║")
+
+    lines.append(f"╚{'═' * (width - 2)}╝")
+
+    return lines
 
 
 def build_rows(torrents: list[dict]) -> list[dict]:
@@ -1323,11 +1550,8 @@ def render_peers_lines(peers_payload: dict, width: int, max_rows: int) -> list[s
 
 def render_mediainfo_lines(item: dict, width: int) -> list[str]:
     raw = item.get("raw") or {}
-    content_path = raw.get("content_path")
-    if not content_path:
-        save_path = raw.get("save_path") or ""
-        name = raw.get("name") or ""
-        content_path = str(Path(save_path) / name) if save_path and name else ""
+    raw = item.get("raw") or {}
+    content_path = get_content_path(raw)
     info = get_mediainfo_for_hash(str(item.get("hash") or ""), content_path)
     lines = []
     for line in str(info).splitlines():
@@ -1350,11 +1574,7 @@ def resolve_available_tabs(opener: urllib.request.OpenerDirector, api_url: str, 
     if peers_payload.get("peers"):
         available.append("Peers")
     raw = item.get("raw") or {}
-    content_path = raw.get("content_path")
-    if not content_path:
-        save_path = raw.get("save_path") or ""
-        name = raw.get("name") or ""
-        content_path = str(Path(save_path) / name) if save_path and name else ""
+    content_path = get_content_path(raw)
     if content_path and shutil.which("mediainfo") and get_largest_media_file(content_path):
         available.append("MediaInfo")
     return available
@@ -1647,11 +1867,7 @@ def main() -> int:
 
             if show_mediainfo_inline:
                 raw_item = item.get("raw") or {}
-                content_path = raw_item.get("content_path")
-                if not content_path:
-                    save_path = raw_item.get("save_path") or ""
-                    item_name = raw_item.get("name") or ""
-                    content_path = str(Path(save_path) / item_name) if save_path and item_name else ""
+                content_path = get_content_path(raw_item)
                 # Use background_only=True to prevent blocking draw
                 mi_summary = get_mediainfo_summary_cached(str(item.get("hash") or ""), content_path, background_only=True)
                 indent = "     "
@@ -1708,17 +1924,29 @@ def main() -> int:
                     mi_queue.append(hash_value)
             mi_queue_index = 0
 
+        # Prune queue if too large (prevent memory leak)
+        if len(mi_queue) > MI_CACHE_MAX_ITEMS:
+            mi_queue = mi_queue[-MI_CACHE_MAX_ITEMS:]
+            mi_queue_index = min(mi_queue_index, len(mi_queue))
+
+        # Periodic cache file cleanup (every 100 queue cycles)
+        if mi_queue and mi_queue_index % 100 == 0:
+            now = time.time()
+            if CACHE_DIR.exists():
+                for cache_file in CACHE_DIR.glob("*.summary"):
+                    try:
+                        if (now - cache_file.stat().st_mtime) > MI_CACHE_MAX_AGE_SECONDS:
+                            cache_file.unlink()
+                    except OSError:
+                        pass
+
         if mi_queue:
             hash_value = mi_queue[mi_queue_index % len(mi_queue)]
             mi_queue_index += 1
             item = next((r for r in rows_sorted if r.get("hash") == hash_value), None)
             if item:
                 raw_item = item.get("raw") or {}
-                content_path = raw_item.get("content_path")
-                if not content_path:
-                    save_path = raw_item.get("save_path") or ""
-                    item_name = raw_item.get("name") or ""
-                    content_path = str(Path(save_path) / item_name) if save_path and item_name else ""
+                content_path = get_content_path(raw_item)
                 # Perform the actual extraction
                 get_mediainfo_summary(hash_value, content_path)
                 
@@ -1877,33 +2105,41 @@ def main() -> int:
                 else:
                     if not have_full_draw:
                         output_buffer = "\033[H\033[J" # Start with clear
-                        tui_print(f"{colors.FG_PRIMARY}{colors.BOLD}QBITTORRENT DASHBOARD (TUI) v{VERSION}{colors.RESET}")
-                        tui_print(f"API: {api_url}")
-                        tui_print(f"Summary: {summary(cached_torrents)}")
-                        tui_print(banner_line)
-                        tui_print("")
-                        tui_print(f"Scope: {colors.CYAN}{scope_label}{colors.RESET}  Sort: {colors.PURPLE_BOLD}{sort_label}{colors.RESET}  {page_label}")
-                        tui_print("")
-                        list_start_row = 8
+                        # Render new v2 header
+                        header_lines = draw_header_v2(
+                            colors=colors,
+                            api_url=api_url,
+                            version=VERSION,
+                            torrents=cached_torrents,
+                            scope=scope,
+                            sort_field=sort_fields[sort_index],
+                            sort_desc=sort_desc,
+                            page=page,
+                            total_pages=total_pages,
+                            filters=filters,
+                            width=term_w
+                        )
+                        for line in header_lines:
+                            tui_print(line)
+
+                        # Banner line (if any)
+                        if banner_line:
+                            tui_print(banner_line)
+                            tui_print("")
+
+                        # Torrent list
+                        list_start_row = len(header_lines) + (2 if banner_line else 0)
                         for line in list_block_lines: tui_print(line)
                         tui_print(divider_line)
                         list_block_height = len(list_block_lines) + 1
                         footer_row = list_start_row + list_block_height
                         have_full_draw = True
                     else:
-                        print_at(3, f"Summary: {summary(cached_torrents)}")
-                        print_at(4, banner_line)
-                        print_at(6, f"Scope: {colors.CYAN}{scope_label}{colors.RESET}  Sort: {colors.PURPLE_BOLD}{sort_label}{colors.RESET}  {page_label}")
-                        row = list_start_row
-                        # Clear ONLY if new list is shorter
-                        current_height = len(list_block_lines) + 1
-                        if list_block_height > current_height:
-                            for i in range(current_height, list_block_height): print_at(row + i, "")
-                        
-                        row = list_start_row
-                        for line in list_block_lines:
-                            print_at(row, line)
-                            row += 1
+                        # For incremental updates, force full redraw to keep header in sync
+                        # This ensures header stats are always current
+                        have_full_draw = False
+                        need_redraw = True
+                        continue
                         print_at(row, divider_line)
                         list_block_height = current_height
                         footer_row = row + 1
