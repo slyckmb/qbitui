@@ -2111,6 +2111,11 @@ def main() -> int:
                 if in_tab_view and selection_hash:
                     output_buffer = "\033[H\033[J" # Start with clear
 
+                    # In tab view, use full terminal width for consistency
+                    tab_display_width = term_w
+                    content_width = tab_display_width  # Override for footer/dividers
+                    divider_line = "-" * tab_display_width
+
                     # Use new v2 header
                     header_lines = draw_header_v2(
                         colors=colors,
@@ -2123,7 +2128,7 @@ def main() -> int:
                         page=page,
                         total_pages=total_pages,
                         filters=filters,
-                        width=content_width
+                        width=tab_display_width
                     )
                     for line in header_lines:
                         tui_print(line)
@@ -2133,9 +2138,10 @@ def main() -> int:
                         tui_print(banner_line)
                         tui_print("")
                     selected_row = next((r for r in page_rows if r.get("hash") == selection_hash), None)
+                    tab_divider = "-" * tab_display_width
                     if not selected_row:
                         tui_print("Selection not available on this page.")
-                        tui_print(divider_line)
+                        tui_print(tab_divider)
                     else:
                         available_tabs = resolve_available_tabs(opener, api_url, selected_row)
                         if not available_tabs: available_tabs = ["Info"]
@@ -2150,8 +2156,9 @@ def main() -> int:
                             else:
                                 tab_labels.append(f"{colors.FG_SECONDARY}{label}{colors.RESET}")
                         tui_print("Tabs: " + " ".join(tab_labels))
-                        tui_print(divider_line)
-                        tab_width = max(40, term_w - 4)
+                        tab_divider = "-" * tab_display_width
+                        tui_print(tab_divider)
+                        tab_width = max(40, tab_display_width - 4)
                         max_rows = max(10, shutil.get_terminal_size((100, 30)).lines - 15)
                         if active_label == "Info": content_lines = render_info_lines(selected_row, tab_width)
                         elif active_label == "Trackers":
@@ -2165,7 +2172,7 @@ def main() -> int:
                             content_lines = render_peers_lines(peers_payload, tab_width, max_rows)
                         else: content_lines = render_mediainfo_lines(selected_row, tab_width, colors)
                         for line in content_lines[:max_rows]: tui_print(line)
-                        tui_print(divider_line)
+                        tui_print(tab_divider)
                         footer_row = 10 + len(content_lines[:max_rows]) + 1
                 else:
                     if not have_full_draw:
