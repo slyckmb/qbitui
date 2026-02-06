@@ -1554,15 +1554,52 @@ def render_peers_lines(peers_payload: dict, width: int, max_rows: int) -> list[s
     return lines
 
 
-def render_mediainfo_lines(item: dict, width: int) -> list[str]:
-    raw = item.get("raw") or {}
+def render_mediainfo_lines(item: dict, width: int, colors: ColorScheme) -> list[str]:
     raw = item.get("raw") or {}
     content_path = get_content_path(raw)
     info = get_mediainfo_for_hash(str(item.get("hash") or ""), content_path)
+
     lines = []
+    if not info:
+        return [f"{colors.FG_TERTIARY}No MediaInfo.{colors.RESET}"]
+
+    # Parse mediainfo output and colorize
     for line in str(info).splitlines():
-        lines.extend(wrap_ansi(line, width))
-    return lines or ["No MediaInfo."]
+        line = line.strip()
+        if not line:
+            lines.append("")
+            continue
+
+        # Check if it's a key: value line
+        if ":" in line:
+            parts = line.split(":", 1)
+            if len(parts) == 2:
+                key, value = parts
+                key = key.strip()
+                value = value.strip()
+
+                # Color label in lavender
+                colored_key = f"{colors.LAVENDER}{key}:{colors.RESET}"
+
+                # Color value based on type
+                if any(unit in value.lower() for unit in ["kb/s", "mb/s", "gb/s", "gb", "mb", "kb", "bits"]):
+                    colored_value = f"{colors.YELLOW}{value}{colors.RESET}"
+                elif value.replace(".", "").replace("-", "").isdigit():
+                    colored_value = f"{colors.YELLOW}{value}{colors.RESET}"
+                elif "/" in value or "\\" in value or ":" in value:
+                    colored_value = f"{colors.BLUE}{value}{colors.RESET}"
+                else:
+                    colored_value = f"{colors.FG_PRIMARY}{value}{colors.RESET}"
+
+                colored_line = f"{colored_key} {colored_value}"
+                lines.extend(wrap_ansi(colored_line, width))
+            else:
+                lines.extend(wrap_ansi(line, width))
+        else:
+            # Section headers or non-key-value lines
+            lines.extend(wrap_ansi(line, width))
+
+    return lines or [f"{colors.FG_TERTIARY}No MediaInfo.{colors.RESET}"]
 
 
 def resolve_available_tabs(opener: urllib.request.OpenerDirector, api_url: str, item: dict) -> list[str]:
@@ -2121,7 +2158,7 @@ def main() -> int:
                         elif active_label == "Peers":
                             peers_payload = fetch_peers(opener, api_url, selection_hash)
                             content_lines = render_peers_lines(peers_payload, tab_width, max_rows)
-                        else: content_lines = render_mediainfo_lines(selected_row, tab_width)
+                        else: content_lines = render_mediainfo_lines(selected_row, tab_width, colors)
                         for line in content_lines[:max_rows]: tui_print(line)
                         tui_print(divider_line)
                         footer_row = 10 + len(content_lines[:max_rows]) + 1
