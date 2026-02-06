@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.7.5"
+VERSION = "1.7.6"
 LAST_UPDATED = "2026-02-06"
 
 # ============================================================================
@@ -1938,7 +1938,26 @@ def main() -> int:
                 # Use background_only=True to prevent blocking draw
                 mi_summary = get_mediainfo_summary_cached(str(item.get("hash") or ""), content_path, background_only=True)
                 indent = "     "
-                lines.append(f"{indent}{colors.FG_TERTIARY}{mi_summary}{colors.RESET}")
+
+                # Colorize inline MediaInfo summary
+                if mi_summary and " • " in mi_summary:
+                    parts = mi_summary.split(" • ")
+                    colored_parts = []
+                    for part in parts:
+                        part = part.strip()
+                        # Bitrates and sizes → yellow
+                        if any(unit in part.lower() for unit in ["b/s", "gb", "mb", "kb", "bits"]):
+                            colored_parts.append(f"{colors.YELLOW}{part}{colors.RESET}")
+                        # Container formats → lavender
+                        elif part in ["Matroska", "MPEG-4", "AVI", "MP4", "MKV", "WebM"]:
+                            colored_parts.append(f"{colors.LAVENDER}{part}{colors.RESET}")
+                        # Default → primary (white)
+                        else:
+                            colored_parts.append(f"{colors.FG_PRIMARY}{part}{colors.RESET}")
+                    mi_summary = f"{colors.FG_SECONDARY} • {colors.RESET}".join(colored_parts)
+                    lines.append(f"{indent}{mi_summary}")
+                else:
+                    lines.append(f"{indent}{colors.FG_TERTIARY}{mi_summary}{colors.RESET}")
 
             if show_tags:
                 tags_raw = str(item.get("tags") or "").strip()
