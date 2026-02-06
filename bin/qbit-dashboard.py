@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.7.7"
+VERSION = "1.7.8"
 LAST_UPDATED = "2026-02-06"
 
 # ============================================================================
@@ -1991,7 +1991,7 @@ def main() -> int:
     def update_mediainfo_cache(rows_sorted: list[dict], page_rows_visible: list[dict]) -> bool:
         """Process one item from the MediaInfo queue. Returns True if cache was updated and item is visible."""
         nonlocal mi_bootstrap_done, mi_queue, mi_queue_index, mi_last_tick
-        if not rows_sorted or not show_mediainfo_inline:
+        if not rows_sorted:
             return False
         now_tick = time.monotonic()
         if now_tick - mi_last_tick < 0.3: # Slower tick to reduce flicker
