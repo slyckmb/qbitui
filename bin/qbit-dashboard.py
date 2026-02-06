@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.7.4"
+VERSION = "1.7.5"
 LAST_UPDATED = "2026-02-06"
 
 # ============================================================================
@@ -2300,7 +2300,7 @@ def main() -> int:
                     tui_print("Actions (selection required): P pause/resume, V verify, C category, E tags, A add trackers, Q qc, D delete")
                     tui_print("Esc clears selection (list) or exits tabs. Quit: Ctrl-Q")
                     tui_print("\nPress any key to continue...", end="")
-                    sys.stdout.flush()
+                    tui_flush()  # Flush buffered help text before waiting
                     tty.setraw(fd)
                     read_input_queue() # Clear any pending
                     select.select([sys.stdin], [], [], 10.0) # Wait for a key
