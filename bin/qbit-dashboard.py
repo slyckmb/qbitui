@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.7.1"
+VERSION = "1.7.2"
 LAST_UPDATED = "2026-02-06"
 
 # ============================================================================
@@ -491,7 +491,24 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def visible_len(value: str) -> int:
-    return len(ANSI_RE.sub("", value))
+    """Calculate display width accounting for ANSI codes and emoji."""
+    plain = ANSI_RE.sub("", value)
+
+    # Account for emoji and other wide characters
+    # Most emoji and East Asian characters display as 2-wide
+    width = 0
+    for char in plain:
+        code = ord(char)
+        # Emoji ranges (simplified - covers most common emoji)
+        if (0x1F300 <= code <= 0x1F9FF or  # Misc Symbols and Pictographs, Emoticons, etc.
+            0x2600 <= code <= 0x26FF or    # Misc symbols (⚡ etc.)
+            0x2700 <= code <= 0x27BF or    # Dingbats
+            0xFE00 <= code <= 0xFE0F or    # Variation Selectors
+            0x1F600 <= code <= 0x1F64F):   # Emoticons
+            width += 2
+        else:
+            width += 1
+    return width
 
 
 def wrap_ansi(value: str, width: int) -> list[str]:
@@ -850,6 +867,15 @@ def draw_header_v2(
         title_line = f"{left}{' ' * left_pad}{center}{' ' * right_pad}{right}"
     else:
         title_line = f"{left}  {center}  {right}"
+
+    # Fix padding to account for emoji display width (emojis render as 2-wide)
+    title_visible = visible_len(title_line)
+    padding_needed = (width - 4) - title_visible  # -4 for "│ " and " │"
+    if padding_needed > 0:
+        title_line += " " * padding_needed
+    elif padding_needed < 0:
+        # Too long, trim from right
+        title_line = title_line[:padding_needed]
 
     lines.append(f"┌{'─' * (width - 2)}┐")
     lines.append(f"│ {title_line} │")
