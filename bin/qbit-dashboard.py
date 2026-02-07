@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.7.8"
+VERSION = "1.7.9"
 LAST_UPDATED = "2026-02-06"
 
 # ============================================================================
@@ -1998,18 +1998,21 @@ def main() -> int:
             return False
         mi_last_tick = now_tick
 
-        if not mi_bootstrap_done:
-            targets = []
-            # Bootstrap priority: current page
-            targets.extend(page_rows_visible)
-            
-            for item in targets:
-                hash_value = item.get("hash") or ""
-                if not hash_value: continue
-                cache_file = CACHE_DIR / f"{hash_value}.summary"
-                if not cache_file.exists() and hash_value not in mi_queue:
-                    mi_queue.append(hash_value)
-            mi_bootstrap_done = True
+        # Always prioritize current page items (add to front of queue)
+        page_hashes_needed = []
+        for item in page_rows_visible:
+            hash_value = item.get("hash") or ""
+            if not hash_value: continue
+            cache_file = CACHE_DIR / f"{hash_value}.summary"
+            if not cache_file.exists() and hash_value not in mi_queue:
+                page_hashes_needed.append(hash_value)
+
+        # Insert at front of queue for immediate processing
+        if page_hashes_needed:
+            mi_queue = page_hashes_needed + mi_queue
+            mi_queue_index = 0
+
+        mi_bootstrap_done = True
 
         if not mi_queue:
             # Fill queue with remaining items
