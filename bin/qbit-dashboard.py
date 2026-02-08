@@ -971,7 +971,8 @@ def draw_footer_v2(
     colors: ColorScheme,
     context: str,
     width: int,
-    has_selection: bool = False
+    has_selection: bool = False,
+    macros: list[dict] = None
 ) -> list[str]:
     """
     Render context-sensitive grouped footer.
@@ -1002,8 +1003,6 @@ def draw_footer_v2(
             actions.append(f"{colors.FG_TERTIARY}{colors.DIM}(Select torrent for actions){colors.RESET}")
 
         actions_line = f"{colors.FG_SECONDARY}ACTIONS:{colors.RESET} " + "  ".join(actions)
-        padding = width - visible_len(actions_line) - 4  # -4 for borders and spaces
-        lines.append(f"│ {actions_line}{' ' * max(0, padding)} │")
 
         # Line 2: Navigation and View
         nav_parts = [
@@ -1025,8 +1024,33 @@ def draw_footer_v2(
             f"  {colors.FG_SECONDARY}│ VIEW:{colors.RESET} " +
             "  ".join(view_parts)
         )
-        padding = width - visible_len(nav_line) - 4
-        lines.append(f"│ {nav_line}{' ' * max(0, padding)} │")
+
+        # Add macros line if macros exist
+        if macros:
+            macro_items = []
+            for idx, macro in enumerate(macros[:9], start=1):  # Limit to 9
+                # Truncate description if too long
+                desc = macro["desc"][:12]
+                macro_items.append(f"{idx}:{desc}")
+
+            macro_str = "  ".join(macro_items)
+            macro_label = f"{colors.FG_SECONDARY}MACROS:{colors.RESET}"
+            macro_hint = f"{colors.FG_DIM}[r to select]{colors.RESET}"
+            macro_line = f"{macro_label} {macro_str}  {macro_hint}"
+
+            # Append all three lines
+            padding1 = max(0, width - visible_len(actions_line) - 4)
+            padding2 = max(0, width - visible_len(nav_line) - 4)
+            padding3 = max(0, width - visible_len(macro_line) - 4)
+            lines.append(f"│ {actions_line}{' ' * padding1} │")
+            lines.append(f"│ {nav_line}{' ' * padding2} │")
+            lines.append(f"│ {macro_line}{' ' * padding3} │")
+        else:
+            # No macros - original two-line footer
+            padding1 = max(0, width - visible_len(actions_line) - 4)
+            padding2 = max(0, width - visible_len(nav_line) - 4)
+            lines.append(f"│ {actions_line}{' ' * padding1} │")
+            lines.append(f"│ {nav_line}{' ' * padding2} │")
 
     elif context == "trackers":
         title_line = f"{colors.CYAN_BOLD}TRACKER VIEW{colors.RESET}"
@@ -1815,6 +1839,7 @@ def main() -> int:
     page = 0
     filters: list[dict] = []
     presets = load_presets(PRESET_FILE)
+    macros_global = load_macros(Path(__file__).parent.parent / "config" / "macros.yaml")
     sort_fields = ["added_on", "name", "state", "ratio", "progress", "eta", "size", "dlspeed", "upspeed"]
     sort_index = 0
     sort_desc = True
@@ -2359,7 +2384,8 @@ def main() -> int:
                     colors=colors,
                     context=footer_context,
                     width=content_width,
-                    has_selection=bool(selection_hash)
+                    has_selection=bool(selection_hash),
+                    macros=macros_global
                 )
 
                 for line in footer_lines:
@@ -2567,6 +2593,7 @@ def main() -> int:
                     for idx, macro in enumerate(macros, start=1):
                         tui_print(f"  {idx}: {macro['desc']}")
                     tui_print("  [ESC] Cancel")
+                    tui_flush()  # Flush menu display before prompting
 
                     # Get selection
                     choice = read_line("\nSelect macro (1-9): ").strip()
