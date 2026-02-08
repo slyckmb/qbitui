@@ -1035,7 +1035,7 @@ def draw_footer_v2(
 
             macro_str = "  ".join(macro_items)
             macro_label = f"{colors.FG_SECONDARY}MACROS:{colors.RESET}"
-            macro_hint = f"{colors.FG_DIM}[r to select]{colors.RESET}"
+            macro_hint = f"{colors.FG_TERTIARY}[r to select]{colors.RESET}"
             macro_line = f"{macro_label} {macro_str}  {macro_hint}"
 
             # Append all three lines
