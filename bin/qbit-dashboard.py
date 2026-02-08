@@ -411,6 +411,52 @@ def spawn_media_qc(hash_value: str) -> str:
     return f"Queued (PID {proc.pid}, log: {log_path})"
 
 
+def run_macro(macro: dict, hash_value: str) -> str:
+    """Execute macro command with hash substitution.
+
+    Args:
+        macro: Dict with 'name', 'cmd', 'desc' keys
+        hash_value: 40-char torrent hash
+
+    Returns:
+        Status message for banner display
+    """
+    cmd_template = macro.get("cmd", "")
+    if not cmd_template:
+        return "Macro missing 'cmd' field"
+
+    # Substitute {hash} placeholder
+    cmd_str = cmd_template.replace("{hash}", hash_value)
+
+    # Create log directory
+    MACRO_LOG_DIR = Path.home() / ".logs" / "qbit_macros"
+    MACRO_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Log file: macro-name_hash8_timestamp.log
+    timestamp = datetime.now(LOCAL_TZ).strftime("%Y%m%d-%H%M%S")
+    safe_name = macro["name"].replace("/", "-")
+    log_path = MACRO_LOG_DIR / f"{safe_name}_{hash_value[:8]}_{timestamp}.log"
+
+    # Write command to log
+    with log_path.open("w") as handle:
+        handle.write(f"=== Macro: {macro['name']} @ {datetime.now(LOCAL_TZ).isoformat()} ===\n")
+        handle.write(f"Hash: {hash_value}\n")
+        handle.write(f"Command: {cmd_str}\n\n")
+
+    try:
+        # Run command via shell (allows pipes, redirects, etc.)
+        proc = subprocess.Popen(
+            cmd_str,
+            shell=True,  # Enable shell features
+            stdout=log_path.open("a"),
+            stderr=subprocess.STDOUT,  # Merge stderr to stdout
+            start_new_session=True,  # Detach from terminal
+        )
+        return f"{macro['name']}: Started (PID {proc.pid}, log: {log_path.name})"
+    except Exception as exc:
+        return f"{macro['name']}: Failed ({exc})"
+
+
 def state_group(state: str) -> str:
     s = state or ""
     if s in STATE_ERROR:
@@ -1264,6 +1310,29 @@ def save_presets(path: Path, slots: dict) -> None:
     payload = {"slots": slots}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+
+def load_macros(path: Path) -> list[dict]:
+    """Load macro definitions from YAML config.
+
+    Returns list of dicts with keys: name, cmd, desc
+    Returns empty list if file missing or invalid.
+    """
+    if not path.exists():
+        return []
+    try:
+        if yaml is None:
+            return []
+        data = yaml.safe_load(path.read_text()) or {}
+        macros = data.get("macros") or []
+        # Validate structure
+        valid = []
+        for m in macros:
+            if isinstance(m, dict) and "name" in m and "cmd" in m and "desc" in m:
+                valid.append(m)
+        return valid
+    except Exception:
+        return []
 
 
 def serialize_filters(filters: list[dict]) -> list[dict]:
@@ -2330,7 +2399,7 @@ def main() -> int:
                     tui_print("Tabs: Tab=cycle tabs (off after last), Ctrl-Tab=cycle, T=cycle (selection required)")
                     tui_print("View: t=tags, d=added, h=hash width, m=inline mediainfo, X=clear mediainfo cache")
                     tui_print("Reset: z=default view (page 1, newest first)")
-                    tui_print("Actions (selection required): P pause/resume, V verify, C category, E tags, A add trackers, Q qc, D delete")
+                    tui_print("Actions (selection required): P pause/resume, V verify, C category, E tags, A add trackers, Q qc, D delete, r run macro")
                     tui_print("Esc clears selection (list) or exits tabs. Quit: Ctrl-Q")
                     tui_print("\nPress any key to continue...", end="")
                     tui_flush()  # Flush buffered help text before waiting
@@ -2472,6 +2541,49 @@ def main() -> int:
                         save_presets(PRESET_FILE, presets)
                         set_banner(f"Saved current to slot {s_idx}")
                     tty.setraw(fd); have_full_draw = False; continue
+
+                # === MACRO MENU ===
+                if key == "r":
+                    if not selection_hash:
+                        set_banner("No hash selected")
+                        continue
+
+                    # Load macros from config
+                    macro_config_path = Path(__file__).parent.parent / "config" / "macros.yaml"
+                    macros = load_macros(macro_config_path)
+
+                    if not macros:
+                        set_banner(f"No macros configured ({macro_config_path})")
+                        continue
+
+                    # Limit to 9 slots
+                    macros = macros[:9]
+
+                    # Switch to cooked mode for readable input
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+                    # Display menu
+                    tui_print(f"\nMacros for hash {selection_hash[:8]}:")
+                    for idx, macro in enumerate(macros, start=1):
+                        tui_print(f"  {idx}: {macro['desc']}")
+                    tui_print("  [ESC] Cancel")
+
+                    # Get selection
+                    choice = read_line("\nSelect macro (1-9): ").strip()
+
+                    # Process selection
+                    if choice.isdigit() and 1 <= int(choice) <= len(macros):
+                        macro = macros[int(choice) - 1]
+                        result = run_macro(macro, selection_hash)
+                        set_banner(result, duration=4.0)  # Longer banner for visibility
+                    elif choice:
+                        set_banner("Invalid selection")
+                    # else: empty input or ESC, just cancel silently
+
+                    # Return to raw mode
+                    tty.setraw(fd)
+                    have_full_draw = False
+                    continue
 
                 # Actions
                 if selection_hash and key.upper() in "PVCEAQD":
