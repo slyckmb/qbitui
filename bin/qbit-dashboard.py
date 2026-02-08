@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.7.11"
+VERSION = "1.7.12"
 LAST_UPDATED = "2026-02-06"
 
 # ============================================================================
@@ -2598,14 +2598,16 @@ def main() -> int:
                     # Get selection
                     choice = read_line("\nSelect macro (1-9): ").strip()
 
-                    # Process selection
-                    if choice.isdigit() and 1 <= int(choice) <= len(macros):
+                    # Cancel on empty input or ESC
+                    if not choice or choice.startswith("\x1b"):
+                        # Empty Enter or ESC pressed - cancel silently
+                        pass
+                    elif choice.isdigit() and 1 <= int(choice) <= len(macros):
                         macro = macros[int(choice) - 1]
                         result = run_macro(macro, selection_hash)
-                        set_banner(result, duration=4.0)  # Longer banner for visibility
-                    elif choice:
+                        set_banner(result, duration=4.0)
+                    else:
                         set_banner("Invalid selection")
-                    # else: empty input or ESC, just cancel silently
 
                     # Return to raw mode
                     tty.setraw(fd)
