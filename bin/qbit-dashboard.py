@@ -1035,7 +1035,7 @@ def draw_footer_v2(
 
             macro_str = "  ".join(macro_items)
             macro_label = f"{colors.FG_SECONDARY}MACROS:{colors.RESET}"
-            macro_hint = f"{colors.FG_TERTIARY}[r to select]{colors.RESET}"
+            macro_hint = f"{colors.FG_TERTIARY}[M menu, Shift+# direct]{colors.RESET}"
             macro_line = f"{macro_label} {macro_str}  {macro_hint}"
 
             # Append all three lines
@@ -2425,7 +2425,7 @@ def main() -> int:
                     tui_print("Tabs: Tab=cycle tabs (off after last), Ctrl-Tab=cycle, T=cycle (selection required)")
                     tui_print("View: t=tags, d=added, h=hash width, m=inline mediainfo, X=clear mediainfo cache")
                     tui_print("Reset: z=default view (page 1, newest first)")
-                    tui_print("Actions (selection required): P pause/resume, V verify, C category, E tags, A add trackers, Q qc, D delete, r run macro")
+                    tui_print("Actions (selection required): P pause/resume, V verify, C category, E tags, A add trackers, Q qc, D delete, M macros")
                     tui_print("Esc clears selection (list) or exits tabs. Quit: Ctrl-Q")
                     tui_print("\nPress any key to continue...", end="")
                     tui_flush()  # Flush buffered help text before waiting
@@ -2569,7 +2569,7 @@ def main() -> int:
                     tty.setraw(fd); have_full_draw = False; continue
 
                 # === MACRO MENU ===
-                if key == "r":
+                if key == "M":
                     if not selection_hash:
                         set_banner("No hash selected")
                         continue
@@ -2610,6 +2610,21 @@ def main() -> int:
                     # Return to raw mode
                     tty.setraw(fd)
                     have_full_draw = False
+                    continue
+
+                # === DIRECT MACRO EXECUTION (Shift+1-9) ===
+                if selection_hash and key in "!@#$%^&*(":
+                    # Map shifted keys to macro numbers: ! → 1, @ → 2, etc.
+                    shift_map = {"!": 1, "@": 2, "#": 3, "$": 4, "%": 5, "^": 6, "&": 7, "*": 8, "(": 9}
+                    macro_idx = shift_map.get(key)
+
+                    if macro_idx:
+                        if macro_idx <= len(macros_global):
+                            macro = macros_global[macro_idx - 1]
+                            result = run_macro(macro, selection_hash)
+                            set_banner(result, duration=4.0)
+                        else:
+                            set_banner(f"Macro {macro_idx} not configured")
                     continue
 
                 # Actions
