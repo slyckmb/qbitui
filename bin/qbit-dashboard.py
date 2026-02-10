@@ -32,8 +32,8 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.7.12"
-LAST_UPDATED = "2026-02-06"
+VERSION = "1.7.18"
+LAST_UPDATED = "2026-02-09"
 
 # ============================================================================
 # COLOR SYSTEM - Claude Code Dark Mode Inspired
@@ -148,6 +148,7 @@ TRACKERS_LIST_URL = "https://raw.githubusercontent.com/ngosang/trackerslist/mast
 QC_TAG_TOOL = Path(__file__).resolve().parent / "media_qc_tag.py"
 QC_LOG_DIR = Path.home() / ".logs" / "media_qc"
 ACTIVE_QC_PROCESSES = {}  # hash -> (pid, start_time)
+ACTIVE_MI_PROCESSES = {}  # hash -> (Popen, log_file, start_time)
 
 MEDIA_EXTS = {
     # Video
@@ -204,41 +205,55 @@ def handle_winch(signum, frame):
 def read_input_queue() -> list[str]:
     """Read all pending input and return a list of mapped keys."""
     keys = []
+    fd = sys.stdin.fileno()
     while True:
         # Non-blocking check for input
-        r, _, _ = select.select([sys.stdin], [], [], 0)
+        r, _, _ = select.select([fd], [], [], 0)
         if not r:
             break
             
-        ch = sys.stdin.read(1)
+        try:
+            b = os.read(fd, 1)
+            if not b:
+                break
+        except (EOFError, OSError):
+            break
+            
+        ch = b.decode('utf-8', errors='ignore')
         if ch == "\x1b":
             # Peek for sequence
             seq = ""
             start = time.monotonic()
-            while (time.monotonic() - start) < 0.15:
-                if select.select([sys.stdin], [], [], 0.02)[0]:
-                    c = sys.stdin.read(1)
-                    seq += c
-                    if seq.endswith(("A", "B", "C", "D", "H", "F", "Z", "~")):
-                        break
-                    if len(seq) > 1 and seq[-1].isalpha() and seq[-1] not in "O[": 
-                         # Catch-all for other terminators
+            while (time.monotonic() - start) < 0.3:
+                # Wait up to 100ms for next character in sequence
+                if select.select([fd], [], [], 0.1)[0]:
+                    try:
+                        c_b = os.read(fd, 1)
+                        if not c_b:
+                            break
+                        c = c_b.decode('utf-8', errors='ignore')
+                        seq += c
+                        # Common terminators for ANSI sequences
+                        if seq.endswith(("A", "B", "C", "D", "H", "F", "Z", "~")):
+                            break
+                        # Catch-all for other terminators
+                        if len(seq) > 1 and seq[-1].isalpha() and seq[-1] not in "O[": 
+                            break
+                    except (EOFError, OSError):
                         break
                 else:
                     # No more data currently available
                     break
             
             if not seq:
-                keys.append("ESC")
+                # Discard lone ESC to prevent arrow key leakage
+                pass
             elif seq in ("[Z", "[1;2Z", "[1;2I"):
                 keys.append("SHIFT_TAB")
             elif seq.startswith("[1;5") or seq.startswith("[1;6"):
                 if seq.endswith("I") or seq.endswith("Z"):
                     keys.append("CTRL_TAB")
-            elif seq in ("[A", "[B", "[C", "[D"):
-                # Arrows are intentionally ignored per requirements
-                pass
-            # We intentionally consume and drop other sequences (arrows, etc) to prevent leaking
+            # All other sequences (arrows, etc) are intentionally ignored/swallowed
         else:
             keys.append(ch)
     return keys
@@ -667,6 +682,9 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
         if val and " • " in val and not val.startswith("MediaInfo"):
             return val
 
+    if hash_value in ACTIVE_MI_PROCESSES:
+        return "MI: loading..."
+
     target = get_largest_media_file(content_path)
     if not target:
         mi_summary = "No media content."
@@ -680,41 +698,21 @@ def get_mediainfo_summary(hash_value: str, content_path: str) -> str:
     # Template covers General, Video, and Audio tracks.
     inform = "General;%Format%|%Duration/String3%|%OverallBitRate/String%|Video;%Width%x%Height% %Format% %BitRate/String%|Audio;%Format% %Channel(s)%ch"
 
+    # Start process in background
     try:
-        result = subprocess.run(
+        # We'll use a temporary file for the output to avoid pipe deadlocks and keep it truly non-blocking
+        out_path = CACHE_DIR / f"{hash_value}.tmp"
+        handle = out_path.open("w")
+        proc = subprocess.Popen(
             [tool, f"--Inform={inform}", str(target)],
-            capture_output=True,
-            text=True,
-            timeout=3.0,  # 3 second timeout to prevent TUI freeze
+            stdout=handle,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
-        res = (result.stdout or "").strip()
-
-        if not res:
-            # Fallback for files where track-specific templates might fail
-            result = subprocess.run(
-                [tool, "--Inform=General;%Format% %Duration/String3%", str(target)],
-                capture_output=True,
-                text=True,
-                timeout=3.0,
-            )
-            res = (result.stdout or "").strip()
-    except subprocess.TimeoutExpired:
-        mi_summary = "MI: timeout (file too large)"
-        cache_file.write_text(mi_summary)
-        return mi_summary
-
-    if not res:
-        mi_summary = "MediaInfo extraction failed."
-    else:
-        # Split by pipes and join with dots for a clean 'info line' look
-        parts = [p.strip() for p in res.split("|") if p.strip()]
-        mi_summary = " • ".join(parts)
-    
-    # Final cleanup
-    mi_summary = mi_summary.replace("  ", " ").strip()
-    
-    cache_file.write_text(mi_summary)
-    return mi_summary
+        ACTIVE_MI_PROCESSES[hash_value] = (proc, handle, time.time())
+        return "MI: loading..."
+    except Exception as exc:
+        return f"MI: error ({exc})"
 
 
 def get_mediainfo_summary_cached(hash_value: str, content_path: str, background_only: bool = False) -> str:
@@ -995,7 +993,7 @@ def draw_footer_v2(
                 f"{colors.CYAN_BOLD}V{colors.RESET}{colors.FG_SECONDARY}=Verify{colors.RESET}",
                 f"{colors.CYAN_BOLD}C{colors.RESET}{colors.FG_SECONDARY}=Category{colors.RESET}",
                 f"{colors.CYAN_BOLD}E{colors.RESET}{colors.FG_SECONDARY}=Tags{colors.RESET}",
-                f"{colors.CYAN_BOLD}A{colors.RESET}{colors.FG_SECONDARY}=Trackers{colors.RESET}",
+                f"{colors.CYAN_BOLD}T{colors.RESET}{colors.FG_SECONDARY}=Trackers{colors.RESET}",
                 f"{colors.CYAN_BOLD}Q{colors.RESET}{colors.FG_SECONDARY}=QC{colors.RESET}",
                 f"{colors.ORANGE_BOLD}D{colors.RESET}{colors.FG_SECONDARY}=Delete{colors.RESET}",
             ])
@@ -1066,7 +1064,7 @@ def draw_footer_v2(
 
         nav = [
             f"{colors.YELLOW_BOLD}↑/↓{colors.RESET}{colors.FG_SECONDARY}=Select{colors.RESET}",
-            f"{colors.PURPLE_BOLD}Esc{colors.RESET}{colors.FG_SECONDARY}=Back{colors.RESET}",
+            f"{colors.PURPLE_BOLD}~{colors.RESET}{colors.FG_SECONDARY}=Back{colors.RESET}",
             f"{colors.PURPLE_BOLD}?{colors.RESET}{colors.FG_SECONDARY}=Help{colors.RESET}",
         ]
 
@@ -1081,7 +1079,7 @@ def draw_footer_v2(
 
         actions = [
             f"{colors.CYAN_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Next{colors.RESET}",
-            f"{colors.PURPLE_BOLD}Esc{colors.RESET}{colors.FG_SECONDARY}=Back{colors.RESET}",
+            f"{colors.PURPLE_BOLD}~{colors.RESET}{colors.FG_SECONDARY}=Back{colors.RESET}",
             f"{colors.PURPLE_BOLD}?{colors.RESET}{colors.FG_SECONDARY}=Help{colors.RESET}",
         ]
 
@@ -1515,10 +1513,22 @@ def apply_action(opener: urllib.request.OpenerDirector, api_url: str, action: st
     if action == "V":
         resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/recheck", {"hashes": hash_value})
         return "OK" if resp in ("Ok.", "") else resp
-    if action == "A":
+    if action == "T":
         priv = raw.get("private")
         if priv is None:
+            # Fetch properties to confirm
+            props_raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/properties", {"hash": hash_value})
+            try:
+                props = json.loads(props_raw)
+                priv = props.get("private")
+                if priv is None:
+                    priv = props.get("is_private")
+            except Exception:
+                pass
+        
+        if priv is None:
             return "Skip (private=unknown)"
+            
         if isinstance(priv, str):
             priv = priv.strip().lower()
             if priv in ("true", "1", "yes"):
@@ -2083,71 +2093,90 @@ def main() -> int:
         return lines
 
     def update_mediainfo_cache(rows_sorted: list[dict], page_rows_visible: list[dict]) -> bool:
-        """Process one item from the MediaInfo queue. Returns True if cache was updated and item is visible."""
+        """Process MediaInfo queue and active processes. Returns True if redraw needed."""
         nonlocal mi_bootstrap_done, mi_queue, mi_queue_index, mi_last_tick
-        if not rows_sorted:
-            return False
         now_tick = time.monotonic()
-        if now_tick - mi_last_tick < 0.3: # Slower tick to reduce flicker
-            return False
+        redraw_needed = False
+
+        # 1. Poll active processes
+        for h in list(ACTIVE_MI_PROCESSES.keys()):
+            proc, handle, start_time = ACTIVE_MI_PROCESSES[h]
+            if proc.poll() is not None:
+                # Process finished
+                handle.close()
+                tmp_path = CACHE_DIR / f"{h}.tmp"
+                cache_file = CACHE_DIR / f"{h}.summary"
+                
+                res = ""
+                if tmp_path.exists():
+                    res = tmp_path.read_text().strip()
+                    tmp_path.unlink()
+                
+                if res:
+                    parts = [p.strip() for p in res.split("|") if p.strip()]
+                    mi_summary = " • ".join(parts).replace("  ", " ").strip()
+                    cache_file.write_text(mi_summary)
+                else:
+                    cache_file.write_text("MediaInfo failed.")
+                
+                del ACTIVE_MI_PROCESSES[h]
+                if any(r.get("hash") == h for r in page_rows_visible):
+                    redraw_needed = True
+            elif (now_tick - start_time) > 15.0:
+                # Timeout stuck process
+                proc.kill()
+                handle.close()
+                tmp_path = CACHE_DIR / f"{h}.tmp"
+                if tmp_path.exists(): tmp_path.unlink()
+                (CACHE_DIR / f"{h}.summary").write_text("MI: timeout")
+                del ACTIVE_MI_PROCESSES[h]
+
+        if not rows_sorted:
+            return redraw_needed
+            
+        if now_tick - mi_last_tick < 0.2: 
+            return redraw_needed
         mi_last_tick = now_tick
 
-        # Always prioritize current page items (add to front of queue)
+        # Limit active processes to avoid I/O thrashing
+        if len(ACTIVE_MI_PROCESSES) >= 3:
+            return redraw_needed
+
+        # 2. Always prioritize current page items
         page_hashes_needed = []
         for item in page_rows_visible:
             hash_value = item.get("hash") or ""
             if not hash_value: continue
-            cache_file = CACHE_DIR / f"{hash_value}.summary"
-            if not cache_file.exists() and hash_value not in mi_queue:
-                page_hashes_needed.append(hash_value)
+            if (CACHE_DIR / f"{hash_value}.summary").exists(): continue
+            if hash_value in ACTIVE_MI_PROCESSES: continue
+            page_hashes_needed.append(hash_value)
 
-        # Insert at front of queue for immediate processing
+        # 3. Process one item (prioritize page)
+        hash_to_start = None
         if page_hashes_needed:
-            mi_queue = page_hashes_needed + mi_queue
-            mi_queue_index = 0
-
-        mi_bootstrap_done = True
-
-        if not mi_queue:
-            # Fill queue with remaining items
-            for item in rows_sorted:
-                hash_value = item.get("hash") or ""
-                if not hash_value: continue
-                cache_file = CACHE_DIR / f"{hash_value}.summary"
-                if not cache_file.exists() and hash_value not in mi_queue:
-                    mi_queue.append(hash_value)
-            mi_queue_index = 0
-
-        # Prune queue if too large (prevent memory leak)
-        if len(mi_queue) > MI_CACHE_MAX_ITEMS:
-            mi_queue = mi_queue[-MI_CACHE_MAX_ITEMS:]
-            mi_queue_index = min(mi_queue_index, len(mi_queue))
-
-        # Periodic cache file cleanup (every 100 queue cycles)
-        if mi_queue and mi_queue_index % 100 == 0:
-            now = time.time()
-            if CACHE_DIR.exists():
-                for cache_file in CACHE_DIR.glob("*.summary"):
-                    try:
-                        if (now - cache_file.stat().st_mtime) > MI_CACHE_MAX_AGE_SECONDS:
-                            cache_file.unlink()
-                    except OSError:
-                        pass
-
-        if mi_queue:
-            hash_value = mi_queue[mi_queue_index % len(mi_queue)]
+            hash_to_start = page_hashes_needed[0]
+        elif mi_queue:
+            # Simple queue rotation
+            idx = mi_queue_index % len(mi_queue)
             mi_queue_index += 1
-            item = next((r for r in rows_sorted if r.get("hash") == hash_value), None)
+            cand = mi_queue[idx]
+            if not (CACHE_DIR / f"{cand}.summary").exists() and cand not in ACTIVE_MI_PROCESSES:
+                hash_to_start = cand
+
+        if hash_to_start:
+            item = next((r for r in rows_sorted if r.get("hash") == hash_to_start), None)
             if item:
-                raw_item = item.get("raw") or {}
-                content_path = get_content_path(raw_item)
-                # Perform the actual extraction
-                get_mediainfo_summary(hash_value, content_path)
-                
-                # Only redraw if the item is visible on screen
-                is_visible = any(r.get("hash") == hash_value for r in page_rows_visible)
-                return is_visible
-        return False
+                get_mediainfo_summary(hash_to_start, get_content_path(item.get("raw") or {}))
+                if any(r.get("hash") == hash_to_start for r in page_rows_visible):
+                    redraw_needed = True
+
+        # Bootstrap queue if empty
+        if not mi_bootstrap_done:
+            mi_queue = [r.get("hash") for r in rows_sorted if r.get("hash")]
+            mi_bootstrap_done = True
+            mi_queue_index = 0
+
+        return redraw_needed
 
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
@@ -2422,11 +2451,11 @@ def main() -> int:
                     tui_print("Scope: a=all, w=downloading, u=uploading, v=paused, e=completed, g=error")
                     tui_print("Sort: s=cycle field, o=toggle asc/desc")
                     tui_print("Filters: f=text, c=category, #=tag, l=line, x=manage stack, p=presets")
-                    tui_print("Tabs: Tab=cycle tabs (off after last), Ctrl-Tab=cycle, T=cycle (selection required)")
+                    tui_print("Tabs: Tab=cycle tabs (off after last), Ctrl-Tab=cycle")
                     tui_print("View: t=tags, d=added, h=hash width, m=inline mediainfo, X=clear mediainfo cache")
                     tui_print("Reset: z=default view (page 1, newest first)")
-                    tui_print("Actions (selection required): P pause/resume, V verify, C category, E tags, A add trackers, Q qc, D delete, M macros")
-                    tui_print("Esc clears selection (list) or exits tabs. Quit: Ctrl-Q")
+                    tui_print("Actions (selection required): P pause/resume, V verify, C category, E tags, T add trackers, Q qc, D delete, M macros")
+                    tui_print("~ clears selection (list) or exits tabs. Quit: Ctrl-Q")
                     tui_print("\nPress any key to continue...", end="")
                     tui_flush()  # Flush buffered help text before waiting
                     tty.setraw(fd)
@@ -2442,7 +2471,7 @@ def main() -> int:
                     tty.setraw(fd)
                     have_full_draw = False
                     continue
-                if key == "ESC":
+                if key == "~":
                     if in_tab_view: in_tab_view = False; have_full_draw = False
                     elif selection_hash:
                         selection_hash = selection_name = None
@@ -2473,9 +2502,6 @@ def main() -> int:
                     continue
                 if key == "\t":
                     cycle_tabs(direction=1, exit_after_last=True)
-                    continue
-                if key == "T":
-                    cycle_tabs(direction=1, exit_after_last=False)
                     continue
                 if key == "m":
                     show_mediainfo_inline = not show_mediainfo_inline
@@ -2630,7 +2656,7 @@ def main() -> int:
                     continue
 
                 # Actions
-                if selection_hash and key.upper() in "PVCEAQD":
+                if selection_hash and key.upper() in "PVCETQD":
                     selected_item = next((r for r in page_rows if r.get("hash") == selection_hash), None)
                     if selected_item:
                         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
