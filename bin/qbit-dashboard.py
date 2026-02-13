@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.9.5"
+VERSION = "1.9.6"
 LAST_UPDATED = "2026-02-13"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -2215,9 +2215,10 @@ def main() -> int:
             else:
                 status_col = colors.status_color(item.get("state") or "")
                 st_colored = f"{status_col}{st:<2}{colors.RESET}"
+                name_colored = f"{status_col}{name}{colors.RESET}"
                 focus_col = f"{colors.CYAN}{focus_marker}{colors.RESET}" if idx == focus_idx else " "
                 cat_colored = f"{colors.PURPLE}{cat}{colors.RESET}"
-                line = f"{focus_col} {idx:<{no_width}} {st_colored} {name} {cat_colored} {added_short} {pct}"
+                line = f"{focus_col} {idx:<{no_width}} {st_colored} {name_colored} {cat_colored} {added_short} {pct}"
                 if visible_len(line) > content_width_local:
                     line = truncate(line, content_width_local)
                 else:
@@ -2230,16 +2231,40 @@ def main() -> int:
                 mi_summary = get_mediainfo_summary_cached(str(item.get("hash") or ""), content_path, background_only=True)
                 indent = "     mi: "
                 width = max(10, content_width_local - len(indent))
-                mi_line = mi_summary or "MediaInfo pending..."
-                for line in wrap_ansi(mi_line, width):
-                    lines.append(indent + line)
+                if mi_summary and " • " in mi_summary:
+                    parts = mi_summary.split(" • ")
+                    colored_parts = []
+                    for part in parts:
+                        part = part.strip()
+                        if any(unit in part.lower() for unit in ["b/s", "gb", "mb", "kb", "bits"]):
+                            colored_parts.append(f"{colors.YELLOW}{part}{colors.RESET}")
+                        elif part in ["Matroska", "MPEG-4", "AVI", "MP4", "MKV", "WebM"]:
+                            colored_parts.append(f"{colors.LAVENDER}{part}{colors.RESET}")
+                        else:
+                            colored_parts.append(f"{colors.FG_PRIMARY}{part}{colors.RESET}")
+                    mi_line = f"{colors.FG_SECONDARY} • {colors.RESET}".join(colored_parts)
+                    for line in wrap_ansi(mi_line, width):
+                        lines.append(indent + line)
+                else:
+                    mi_line = mi_summary or "MediaInfo pending..."
+                    for line in wrap_ansi(f"{colors.FG_TERTIARY}{mi_line}{colors.RESET}", width):
+                        lines.append(indent + line)
 
             if show_tags:
                 tags_raw = str(item.get("tags") or "").strip()
                 if tags_raw:
+                    tag_parts = []
+                    for tag in [t.strip() for t in tags_raw.split(",") if t.strip()]:
+                        if "FAIL" in tag.upper():
+                            tag_parts.append(f"{colors.ERROR}{tag}{colors.RESET}")
+                        elif "cross-seed" in tag.lower():
+                            tag_parts.append(f"{colors.ORANGE}{tag}{colors.RESET}")
+                        else:
+                            tag_parts.append(f"{colors.PURPLE}{tag}{colors.RESET}")
+                    tags_line = ", ".join(tag_parts)
                     indent = "     tags: "
                     width = max(10, content_width_local - len(indent))
-                    for line in wrap_ansi(tags_raw, width):
+                    for line in wrap_ansi(tags_line, width):
                         lines.append(indent + line)
         return lines
 
