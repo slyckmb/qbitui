@@ -32,8 +32,8 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.7.18"
-LAST_UPDATED = "2026-02-09"
+VERSION = "1.8.1"
+LAST_UPDATED = "2026-02-13"
 
 # ============================================================================
 # COLOR SYSTEM - Claude Code Dark Mode Inspired
@@ -281,6 +281,13 @@ def read_line(prompt: str) -> str:
 def terminal_width() -> int:
     try:
         return max(40, shutil.get_terminal_size((100, 20)).columns)
+    except Exception:
+        return 100
+
+
+def terminal_width_raw() -> int:
+    try:
+        return max(20, shutil.get_terminal_size((100, 20)).columns)
     except Exception:
         return 100
 
@@ -812,6 +819,18 @@ def added_str(value: int | float | None) -> str:
     return datetime.fromtimestamp(value, LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
 
 
+def added_short_str(value: int | float | None) -> str:
+    if value is None:
+        return "-"
+    try:
+        value = int(value)
+    except Exception:
+        return "-"
+    if value <= 0:
+        return "-"
+    return datetime.fromtimestamp(value, LOCAL_TZ).strftime("%m-%d %H:%M")
+
+
 def format_ts(value: int | float | None) -> str:
     if value is None:
         return "-"
@@ -965,6 +984,31 @@ def draw_header_v2(
     return lines
 
 
+def draw_header_minimal(
+    colors: ColorScheme,
+    scope: str,
+    page: int,
+    total_pages: int,
+    width: int
+) -> list[str]:
+    scope_display = scope.upper() if scope != "all" else "ALL"
+    left = f"{colors.CYAN_BOLD}QBIT{colors.RESET} {colors.FG_SECONDARY}{scope_display}{colors.RESET}"
+    right = f"{colors.FG_SECONDARY}Pg {page + 1}/{total_pages}{colors.RESET}"
+
+    inner_width = max(1, width - 4)
+    base = f"{left} {right}"
+    if visible_len(base) <= inner_width:
+        pad = inner_width - visible_len(left) - visible_len(right)
+        line = f"{left}{' ' * max(1, pad)}{right}"
+    else:
+        line = truncate(base, inner_width)
+
+    return [
+        f"│ {line} │",
+        "─" * width,
+    ]
+
+
 def draw_footer_v2(
     colors: ColorScheme,
     context: str,
@@ -1111,6 +1155,7 @@ def build_rows(torrents: list[dict]) -> list[dict]:
             "upspeed": speed_str(t.get("upspeed")),
             "eta": eta_str(t.get("eta")),
             "added": added_str(t.get("added_on")),
+            "added_short": added_short_str(t.get("added_on")),
             "category": t.get("category") or "-",
             "tags": t.get("tags") or "-",
             "hash": t.get("hash") or "",
@@ -1857,6 +1902,7 @@ def main() -> int:
     show_mediainfo_inline = False
     show_full_hash = False
     show_added = True
+    narrow_mode = False
     focus_idx = 0
     selection_hash: str | None = None
     selection_name: str | None = None
@@ -2092,6 +2138,43 @@ def main() -> int:
                         lines.append(indent + line)
         return lines
 
+    def build_narrow_list_block(page_rows_local: list[dict], content_width_local: int) -> list[str]:
+        lines: list[str] = []
+        added_width = 11
+        pct_width = 4
+        name_width = max(6, content_width_local - 22)
+        narrow_header = f"{'F':<1} {'ST':<2} {'Name':<{name_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
+        narrow_divider = "-" * content_width_local
+
+        lines.append(truncate(narrow_header, content_width_local))
+        lines.append(narrow_divider)
+
+        for idx, item in enumerate(page_rows_local, 0):
+            selected = selection_hash == item.get("hash")
+            focus_marker = ">" if idx == focus_idx else " "
+            st = str(item.get("st") or "?")
+            name = truncate(str(item.get("name") or "-"), name_width).ljust(name_width)
+            added_short = str(item.get("added_short") or "-")[:added_width].ljust(added_width)
+            pct_value = str(item.get("progress") or "-")
+            pct = truncate(pct_value, pct_width).rjust(pct_width)
+
+            row_plain = f"{focus_marker:<1} {st:<2} {name} {added_short} {pct}"
+            row_plain = row_plain[:content_width_local].ljust(content_width_local)
+
+            if selected:
+                lines.append(f"{colors.SELECTION}{row_plain}{colors.RESET}")
+            else:
+                status_col = colors.status_color(item.get("state") or "")
+                st_colored = f"{status_col}{st:<2}{colors.RESET}"
+                focus_col = f"{colors.CYAN}{focus_marker}{colors.RESET}" if idx == focus_idx else " "
+                line = f"{focus_col} {st_colored} {name} {added_short} {pct}"
+                if visible_len(line) > content_width_local:
+                    line = truncate(line, content_width_local)
+                else:
+                    line = line + (" " * (content_width_local - visible_len(line)))
+                lines.append(line)
+        return lines
+
     def update_mediainfo_cache(rows_sorted: list[dict], page_rows_visible: list[dict]) -> bool:
         """Process MediaInfo queue and active processes. Returns True if redraw needed."""
         nonlocal mi_bootstrap_done, mi_queue, mi_queue_index, mi_last_tick
@@ -2245,16 +2328,18 @@ def main() -> int:
 
             global NEED_RESIZE
             if NEED_RESIZE:
-                term_w = terminal_width()
+                term_w = terminal_width_raw() if narrow_mode and not in_tab_view else terminal_width()
                 have_full_draw = False
                 need_redraw = True
                 NEED_RESIZE = False
 
             if data_changed or need_redraw:
-                term_w = terminal_width()
+                term_w = terminal_width_raw() if narrow_mode and not in_tab_view else terminal_width()
                 banner_line = ""
                 if banner_text and time.time() < banner_until:
                     banner_line = f"{colors.YELLOW_BOLD}{banner_text}{colors.RESET}"
+                elif narrow_mode:
+                    banner_line = ""
                 elif not selection_hash:
                     banner_line = f"{colors.FG_SECONDARY}Select an item.{colors.RESET}"
                 else:
@@ -2278,10 +2363,15 @@ def main() -> int:
                     f"{'Prog':<6} {'Size':<{size_width}} {'DL':<8} {'UL':<8} {'ETA':<6} "
                     f"{added_part}{'Cat':<{cat_width}} {hash_label:<{hash_width}}"
                 )
-                # Use content width for consistent layout
-                content_width = min(len(header_line), term_w)
-                divider_line = "-" * content_width
-                list_block_lines = build_list_block(page_rows)
+                if narrow_mode and not in_tab_view:
+                    content_width = term_w
+                    divider_line = "-" * content_width
+                    list_block_lines = build_narrow_list_block(page_rows, content_width)
+                else:
+                    # Use content width for consistent layout
+                    content_width = min(len(header_line), term_w)
+                    divider_line = "-" * content_width
+                    list_block_lines = build_list_block(page_rows)
 
                 if in_tab_view and selection_hash:
                     output_buffer = "\033[H\033[J" # Start with clear
@@ -2352,20 +2442,29 @@ def main() -> int:
                 else:
                     if not have_full_draw:
                         output_buffer = "\033[H\033[J" # Start with clear
-                        # Render new v2 header
-                        header_lines = draw_header_v2(
-                            colors=colors,
-                            api_url=api_url,
-                            version=VERSION,
-                            torrents=cached_torrents,
-                            scope=scope,
-                            sort_field=sort_fields[sort_index],
-                            sort_desc=sort_desc,
-                            page=page,
-                            total_pages=total_pages,
-                            filters=filters,
-                            width=content_width
-                        )
+                        if narrow_mode:
+                            header_lines = draw_header_minimal(
+                                colors=colors,
+                                scope=scope,
+                                page=page,
+                                total_pages=total_pages,
+                                width=content_width
+                            )
+                        else:
+                            # Render new v2 header
+                            header_lines = draw_header_v2(
+                                colors=colors,
+                                api_url=api_url,
+                                version=VERSION,
+                                torrents=cached_torrents,
+                                scope=scope,
+                                sort_field=sort_fields[sort_index],
+                                sort_desc=sort_desc,
+                                page=page,
+                                total_pages=total_pages,
+                                filters=filters,
+                                width=content_width
+                            )
                         for line in header_lines:
                             tui_print(line)
 
@@ -2393,6 +2492,12 @@ def main() -> int:
 
                 # Render Footer with absolute positioning
                 row = footer_row
+
+                if narrow_mode and not in_tab_view:
+                    print_at(row, divider_line); row += 1
+                    tui_flush()
+                    need_redraw = False
+                    continue
 
                 # Show filters if any active
                 if filters:
@@ -2452,7 +2557,7 @@ def main() -> int:
                     tui_print("Sort: s=cycle field, o=toggle asc/desc")
                     tui_print("Filters: f=text, c=category, #=tag, l=line, x=manage stack, p=presets")
                     tui_print("Tabs: Tab=cycle tabs (off after last), Ctrl-Tab=cycle")
-                    tui_print("View: t=tags, d=added, h=hash width, m=inline mediainfo, X=clear mediainfo cache")
+                    tui_print("View: n=narrow mode, t=tags, d=added, h=hash width, m=inline mediainfo, X=clear mediainfo cache")
                     tui_print("Reset: z=default view (page 1, newest first)")
                     tui_print("Actions (selection required): P pause/resume, V verify, C category, E tags, T add trackers, Q qc, D delete, M macros")
                     tui_print("~ clears selection (list) or exits tabs. Quit: Ctrl-Q")
@@ -2511,6 +2616,7 @@ def main() -> int:
                     scope = "all"; page = 0; sort_index = 0; sort_desc = True; filters = []
                     show_tags = show_mediainfo_inline = show_full_hash = False
                     show_added = True; focus_idx = 0; in_tab_view = False; active_tab = 0
+                    narrow_mode = False
                     selection_hash = selection_name = None
                     have_full_draw = False
                     continue
@@ -2533,6 +2639,11 @@ def main() -> int:
                 if key == "t": show_tags = not show_tags; have_full_draw = False; continue
                 if key == "d": show_added = not show_added; have_full_draw = False; continue
                 if key == "h": show_full_hash = not show_full_hash; have_full_draw = False; continue
+                if key == "n":
+                    narrow_mode = not narrow_mode
+                    set_banner(f"Narrow mode {'ON' if narrow_mode else 'OFF'}")
+                    have_full_draw = False
+                    continue
                 if key in "0123456789":
                     idx = int(key)
                     if idx < len(page_rows):
