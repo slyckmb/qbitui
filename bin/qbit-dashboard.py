@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.8.7"
+VERSION = "1.8.9"
 LAST_UPDATED = "2026-02-13"
 
 # ============================================================================
@@ -1922,7 +1922,8 @@ def main() -> int:
     page = 0
     filters: list[dict] = []
     presets = load_presets(PRESET_FILE)
-    macros_global = load_macros(Path(__file__).parent.parent / "config" / "macros.yaml")
+    macro_config_path = Path(__file__).parent.parent / "config" / "macros.yaml"
+    macros_global = load_macros(macro_config_path)
     sort_fields = ["added_on", "name", "state", "ratio", "progress", "eta", "size", "dlspeed", "upspeed"]
     sort_index = 0
     sort_desc = True
@@ -2299,6 +2300,7 @@ def main() -> int:
         while True:
             now = time.monotonic()
             data_changed = False
+            macros_global = load_macros(macro_config_path)
             current_term_w = terminal_width_raw() if narrow_mode and not in_tab_view else terminal_width()
             if current_term_w != last_term_w:
                 last_term_w = current_term_w
@@ -2749,7 +2751,6 @@ def main() -> int:
                         continue
 
                     # Load macros from config
-                    macro_config_path = Path(__file__).parent.parent / "config" / "macros.yaml"
                     macros = load_macros(macro_config_path)
 
                     if not macros:
@@ -2793,10 +2794,11 @@ def main() -> int:
                     # Map shifted keys to macro numbers: ! → 1, @ → 2, etc.
                     shift_map = {"!": 1, "@": 2, "#": 3, "$": 4, "%": 5, "^": 6, "&": 7, "*": 8, "(": 9}
                     macro_idx = shift_map.get(key)
+                    macros_live = load_macros(macro_config_path)[:9]
 
                     if macro_idx:
-                        if macro_idx <= len(macros_global):
-                            macro = macros_global[macro_idx - 1]
+                        if macro_idx <= len(macros_live):
+                            macro = macros_live[macro_idx - 1]
                             result = run_macro(macro, selection_hash)
                             set_banner(result, duration=4.0)
                         else:
