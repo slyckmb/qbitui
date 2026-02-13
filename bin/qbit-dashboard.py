@@ -34,8 +34,9 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.8.9"
+VERSION = "1.9.1"
 LAST_UPDATED = "2026-02-13"
+FULL_TUI_MIN_WIDTH = 120
 
 # ============================================================================
 # COLOR SYSTEM - Claude Code Dark Mode Inspired
@@ -1924,6 +1925,8 @@ def main() -> int:
     presets = load_presets(PRESET_FILE)
     macro_config_path = Path(__file__).parent.parent / "config" / "macros.yaml"
     macros_global = load_macros(macro_config_path)
+    macros_mtime = macro_config_path.stat().st_mtime if macro_config_path.exists() else -1.0
+    last_macro_check = 0.0
     sort_fields = ["added_on", "name", "state", "ratio", "progress", "eta", "size", "dlspeed", "upspeed"]
     sort_index = 0
     sort_desc = True
@@ -1931,7 +1934,7 @@ def main() -> int:
     show_mediainfo_inline = False
     show_full_hash = False
     show_added = True
-    narrow_mode = False
+    narrow_mode = terminal_width_raw() < FULL_TUI_MIN_WIDTH
     focus_idx = 0
     selection_hash: str | None = None
     selection_name: str | None = None
@@ -1950,6 +1953,20 @@ def main() -> int:
         banner_text = message
         banner_until = now + duration
         last_banner_time = now
+
+    def refresh_macros_if_changed(force: bool = False) -> None:
+        nonlocal macros_global, macros_mtime, last_macro_check
+        now = time.monotonic()
+        if not force and (now - last_macro_check) < 0.8:
+            return
+        last_macro_check = now
+        current_mtime = macro_config_path.stat().st_mtime if macro_config_path.exists() else -1.0
+        if force or current_mtime != macros_mtime:
+            macros_global = load_macros(macro_config_path)
+            macros_mtime = current_mtime
+
+    if narrow_mode:
+        set_banner(f"Auto narrow mode (width < {FULL_TUI_MIN_WIDTH})", duration=3.0)
 
     if args.debug_keys:
         try:
@@ -2300,7 +2317,7 @@ def main() -> int:
         while True:
             now = time.monotonic()
             data_changed = False
-            macros_global = load_macros(macro_config_path)
+            refresh_macros_if_changed()
             current_term_w = terminal_width_raw() if narrow_mode and not in_tab_view else terminal_width()
             if current_term_w != last_term_w:
                 last_term_w = current_term_w
@@ -2655,7 +2672,7 @@ def main() -> int:
                     scope = "all"; page = 0; sort_index = 0; sort_desc = True; filters = []
                     show_tags = show_mediainfo_inline = show_full_hash = False
                     show_added = True; focus_idx = 0; in_tab_view = False; active_tab = 0
-                    narrow_mode = False
+                    narrow_mode = terminal_width_raw() < FULL_TUI_MIN_WIDTH
                     selection_hash = selection_name = None
                     have_full_draw = False
                     continue
@@ -2751,7 +2768,8 @@ def main() -> int:
                         continue
 
                     # Load macros from config
-                    macros = load_macros(macro_config_path)
+                    refresh_macros_if_changed(force=True)
+                    macros = macros_global
 
                     if not macros:
                         set_banner(f"No macros configured ({macro_config_path})")
@@ -2794,7 +2812,8 @@ def main() -> int:
                     # Map shifted keys to macro numbers: ! → 1, @ → 2, etc.
                     shift_map = {"!": 1, "@": 2, "#": 3, "$": 4, "%": 5, "^": 6, "&": 7, "*": 8, "(": 9}
                     macro_idx = shift_map.get(key)
-                    macros_live = load_macros(macro_config_path)[:9]
+                    refresh_macros_if_changed(force=True)
+                    macros_live = macros_global[:9]
 
                     if macro_idx:
                         if macro_idx <= len(macros_live):
