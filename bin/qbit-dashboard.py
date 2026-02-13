@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.9.3"
+VERSION = "1.9.5"
 LAST_UPDATED = "2026-02-13"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -2186,11 +2186,12 @@ def main() -> int:
     def build_narrow_list_block(page_rows_local: list[dict], content_width_local: int) -> list[str]:
         lines: list[str] = []
         no_width = max(2, len(str(max(0, len(page_rows_local) - 1))))
+        cat_width = 4
         added_width = 11
         pct_width = 4
-        reserved_width = 23 + no_width
+        reserved_width = 28 + no_width
         name_width = max(1, content_width_local - reserved_width)
-        narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Name':<{name_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
+        narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Name':<{name_width}} {'Cat':<{cat_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
         narrow_divider = "-" * content_width_local
 
         lines.append(truncate(narrow_header, content_width_local))
@@ -2201,11 +2202,12 @@ def main() -> int:
             focus_marker = ">" if idx == focus_idx else " "
             st = str(item.get("st") or "?")
             name = truncate(str(item.get("name") or "-"), name_width).ljust(name_width)
+            cat = truncate(str(item.get("category") or "-"), cat_width).ljust(cat_width)
             added_short = str(item.get("added_short") or "-")[:added_width].ljust(added_width)
             pct_value = str(item.get("progress") or "-")
             pct = truncate(pct_value, pct_width).rjust(pct_width)
 
-            row_plain = f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {name} {added_short} {pct}"
+            row_plain = f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {name} {cat} {added_short} {pct}"
             row_plain = row_plain[:content_width_local].ljust(content_width_local)
 
             if selected:
@@ -2214,12 +2216,31 @@ def main() -> int:
                 status_col = colors.status_color(item.get("state") or "")
                 st_colored = f"{status_col}{st:<2}{colors.RESET}"
                 focus_col = f"{colors.CYAN}{focus_marker}{colors.RESET}" if idx == focus_idx else " "
-                line = f"{focus_col} {idx:<{no_width}} {st_colored} {name} {added_short} {pct}"
+                cat_colored = f"{colors.PURPLE}{cat}{colors.RESET}"
+                line = f"{focus_col} {idx:<{no_width}} {st_colored} {name} {cat_colored} {added_short} {pct}"
                 if visible_len(line) > content_width_local:
                     line = truncate(line, content_width_local)
                 else:
                     line = line + (" " * (content_width_local - visible_len(line)))
                 lines.append(line)
+
+            if show_mediainfo_inline:
+                raw_item = item.get("raw") or {}
+                content_path = get_content_path(raw_item)
+                mi_summary = get_mediainfo_summary_cached(str(item.get("hash") or ""), content_path, background_only=True)
+                indent = "     mi: "
+                width = max(10, content_width_local - len(indent))
+                mi_line = mi_summary or "MediaInfo pending..."
+                for line in wrap_ansi(mi_line, width):
+                    lines.append(indent + line)
+
+            if show_tags:
+                tags_raw = str(item.get("tags") or "").strip()
+                if tags_raw:
+                    indent = "     tags: "
+                    width = max(10, content_width_local - len(indent))
+                    for line in wrap_ansi(tags_raw, width):
+                        lines.append(indent + line)
         return lines
 
     def update_mediainfo_cache(rows_sorted: list[dict], page_rows_visible: list[dict]) -> bool:
