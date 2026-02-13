@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.8.5"
+VERSION = "1.8.7"
 LAST_UPDATED = "2026-02-13"
 
 # ============================================================================
@@ -485,15 +485,23 @@ def run_macro(macro: dict, hash_value: str) -> str:
         handle.write(f"Command: {cmd_str}\n\n")
 
     try:
-        # Run command via shell (allows pipes, redirects, etc.)
+        # Run in bash from repo root so macros can use repo-relative paths consistently.
+        repo_root = Path(__file__).resolve().parents[2]
         proc = subprocess.Popen(
-            cmd_str,
-            shell=True,  # Enable shell features
+            ["bash", "-lc", cmd_str],
             stdout=log_path.open("a"),
-            stderr=subprocess.STDOUT,  # Merge stderr to stdout
-            start_new_session=True,  # Detach from terminal
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            cwd=str(repo_root),
         )
-        return f"{macro['name']}: Started (PID {proc.pid}, log: {log_path.name})"
+        # Detect immediate failures to avoid false "Started" messages.
+        time.sleep(0.2)
+        rc = proc.poll()
+        if rc is None:
+            return f"{macro['name']}: Started (PID {proc.pid}, log: {log_path.name})"
+        if rc == 0:
+            return f"{macro['name']}: Completed (log: {log_path.name})"
+        return f"{macro['name']}: Failed (exit {rc}, log: {log_path.name})"
     except Exception as exc:
         return f"{macro['name']}: Failed ({exc})"
 
