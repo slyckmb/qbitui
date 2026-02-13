@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.8.1"
+VERSION = "1.8.3"
 LAST_UPDATED = "2026-02-13"
 
 # ============================================================================
@@ -287,7 +287,7 @@ def terminal_width() -> int:
 
 def terminal_width_raw() -> int:
     try:
-        return max(20, shutil.get_terminal_size((100, 20)).columns)
+        return max(10, shutil.get_terminal_size((100, 20)).columns)
     except Exception:
         return 100
 
@@ -1985,6 +1985,7 @@ def main() -> int:
     mi_last_tick = 0.0
     last_key_debug = "-"
     need_redraw = True
+    last_term_w = terminal_width()
     output_buffer = ""
 
     def cycle_tabs(direction: int = 1, exit_after_last: bool = False) -> None:
@@ -2140,10 +2141,12 @@ def main() -> int:
 
     def build_narrow_list_block(page_rows_local: list[dict], content_width_local: int) -> list[str]:
         lines: list[str] = []
+        no_width = max(2, len(str(max(0, len(page_rows_local) - 1))))
         added_width = 11
         pct_width = 4
-        name_width = max(6, content_width_local - 22)
-        narrow_header = f"{'F':<1} {'ST':<2} {'Name':<{name_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
+        reserved_width = 23 + no_width
+        name_width = max(1, content_width_local - reserved_width)
+        narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Name':<{name_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
         narrow_divider = "-" * content_width_local
 
         lines.append(truncate(narrow_header, content_width_local))
@@ -2158,7 +2161,7 @@ def main() -> int:
             pct_value = str(item.get("progress") or "-")
             pct = truncate(pct_value, pct_width).rjust(pct_width)
 
-            row_plain = f"{focus_marker:<1} {st:<2} {name} {added_short} {pct}"
+            row_plain = f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {name} {added_short} {pct}"
             row_plain = row_plain[:content_width_local].ljust(content_width_local)
 
             if selected:
@@ -2167,7 +2170,7 @@ def main() -> int:
                 status_col = colors.status_color(item.get("state") or "")
                 st_colored = f"{status_col}{st:<2}{colors.RESET}"
                 focus_col = f"{colors.CYAN}{focus_marker}{colors.RESET}" if idx == focus_idx else " "
-                line = f"{focus_col} {st_colored} {name} {added_short} {pct}"
+                line = f"{focus_col} {idx:<{no_width}} {st_colored} {name} {added_short} {pct}"
                 if visible_len(line) > content_width_local:
                     line = truncate(line, content_width_local)
                 else:
@@ -2268,6 +2271,11 @@ def main() -> int:
         while True:
             now = time.monotonic()
             data_changed = False
+            current_term_w = terminal_width_raw() if narrow_mode and not in_tab_view else terminal_width()
+            if current_term_w != last_term_w:
+                last_term_w = current_term_w
+                have_full_draw = False
+                need_redraw = True
             if not cached_rows or (now - cache_time) >= fetch_interval:
                 raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/info")
                 if raw.startswith("Error:") or raw.startswith("HTTP "):
@@ -2328,13 +2336,13 @@ def main() -> int:
 
             global NEED_RESIZE
             if NEED_RESIZE:
-                term_w = terminal_width_raw() if narrow_mode and not in_tab_view else terminal_width()
+                term_w = current_term_w
                 have_full_draw = False
                 need_redraw = True
                 NEED_RESIZE = False
 
             if data_changed or need_redraw:
-                term_w = terminal_width_raw() if narrow_mode and not in_tab_view else terminal_width()
+                term_w = current_term_w
                 banner_line = ""
                 if banner_text and time.time() < banner_until:
                     banner_line = f"{colors.YELLOW_BOLD}{banner_text}{colors.RESET}"
