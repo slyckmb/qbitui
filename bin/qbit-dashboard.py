@@ -12,6 +12,8 @@ import readline  # Enables line editing for input()
 import re
 import subprocess
 import termios
+import fcntl
+import struct
 import time
 import tty
 import urllib.parse
@@ -32,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.8.3"
+VERSION = "1.8.5"
 LAST_UPDATED = "2026-02-13"
 
 # ============================================================================
@@ -279,6 +281,15 @@ def read_line(prompt: str) -> str:
 
 
 def terminal_width() -> int:
+    # Prefer live TTY width (works better in tmux than env-based sizing).
+    for fd in (sys.stdout.fileno(), sys.stdin.fileno()):
+        try:
+            packed = fcntl.ioctl(fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+            rows, cols, _, _ = struct.unpack("HHHH", packed)
+            if cols and cols > 0:
+                return max(40, int(cols))
+        except Exception:
+            pass
     try:
         return max(40, shutil.get_terminal_size((100, 20)).columns)
     except Exception:
@@ -286,6 +297,14 @@ def terminal_width() -> int:
 
 
 def terminal_width_raw() -> int:
+    for fd in (sys.stdout.fileno(), sys.stdin.fileno()):
+        try:
+            packed = fcntl.ioctl(fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+            rows, cols, _, _ = struct.unpack("HHHH", packed)
+            if cols and cols > 0:
+                return max(10, int(cols))
+        except Exception:
+            pass
     try:
         return max(10, shutil.get_terminal_size((100, 20)).columns)
     except Exception:
@@ -906,7 +925,7 @@ def draw_header_v2(
         else: return f"{speed / (1024 * 1024):.1f} MB/s"
 
     # Line 1: Title bar (ASCII chars for consistent width)
-    left = f"{colors.CYAN_BOLD}* QBITTORRENT TUI{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}"
+    left = f"{colors.CYAN_BOLD}* QBTUI{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}"
     center = f"{colors.FG_SECONDARY}@ {colors.BLUE}{api_url}{colors.RESET}"
     right = f"{colors.FG_SECONDARY}{datetime.now().strftime('%Y-%m-%d')}{colors.RESET}"
 
@@ -986,13 +1005,14 @@ def draw_header_v2(
 
 def draw_header_minimal(
     colors: ColorScheme,
+    version: str,
     scope: str,
     page: int,
     total_pages: int,
     width: int
 ) -> list[str]:
     scope_display = scope.upper() if scope != "all" else "ALL"
-    left = f"{colors.CYAN_BOLD}QBIT{colors.RESET} {colors.FG_SECONDARY}{scope_display}{colors.RESET}"
+    left = f"{colors.CYAN_BOLD}QBTUI{colors.RESET} {colors.FG_SECONDARY}v{version} {scope_display}{colors.RESET}"
     right = f"{colors.FG_SECONDARY}Pg {page + 1}/{total_pages}{colors.RESET}"
 
     inner_width = max(1, width - 4)
@@ -2453,6 +2473,7 @@ def main() -> int:
                         if narrow_mode:
                             header_lines = draw_header_minimal(
                                 colors=colors,
+                                version=VERSION,
                                 scope=scope,
                                 page=page,
                                 total_pages=total_pages,
