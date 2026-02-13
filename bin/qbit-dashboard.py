@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.9.1"
+VERSION = "1.9.3"
 LAST_UPDATED = "2026-02-13"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -1934,7 +1934,8 @@ def main() -> int:
     show_mediainfo_inline = False
     show_full_hash = False
     show_added = True
-    narrow_mode = terminal_width_raw() < FULL_TUI_MIN_WIDTH
+    narrow_mode = False
+    narrow_mode_auto = True
     focus_idx = 0
     selection_hash: str | None = None
     selection_name: str | None = None
@@ -1964,9 +1965,6 @@ def main() -> int:
         if force or current_mtime != macros_mtime:
             macros_global = load_macros(macro_config_path)
             macros_mtime = current_mtime
-
-    if narrow_mode:
-        set_banner(f"Auto narrow mode (width < {FULL_TUI_MIN_WIDTH})", duration=3.0)
 
     if args.debug_keys:
         try:
@@ -2314,11 +2312,21 @@ def main() -> int:
     old_settings = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
+        start_width = terminal_width_raw()
+        narrow_mode = start_width < FULL_TUI_MIN_WIDTH
+        if narrow_mode:
+            set_banner(f"Auto narrow mode (width < {FULL_TUI_MIN_WIDTH})", duration=3.0)
         while True:
             now = time.monotonic()
             data_changed = False
             refresh_macros_if_changed()
             current_term_w = terminal_width_raw() if narrow_mode and not in_tab_view else terminal_width()
+            if narrow_mode_auto and not in_tab_view:
+                auto_narrow = current_term_w < FULL_TUI_MIN_WIDTH
+                if auto_narrow != narrow_mode:
+                    narrow_mode = auto_narrow
+                    have_full_draw = False
+                    need_redraw = True
             if current_term_w != last_term_w:
                 last_term_w = current_term_w
                 have_full_draw = False
@@ -2393,8 +2401,6 @@ def main() -> int:
                 banner_line = ""
                 if banner_text and time.time() < banner_until:
                     banner_line = f"{colors.YELLOW_BOLD}{banner_text}{colors.RESET}"
-                elif narrow_mode:
-                    banner_line = ""
                 elif not selection_hash:
                     banner_line = f"{colors.FG_SECONDARY}Select an item.{colors.RESET}"
                 else:
@@ -2673,6 +2679,7 @@ def main() -> int:
                     show_tags = show_mediainfo_inline = show_full_hash = False
                     show_added = True; focus_idx = 0; in_tab_view = False; active_tab = 0
                     narrow_mode = terminal_width_raw() < FULL_TUI_MIN_WIDTH
+                    narrow_mode_auto = True
                     selection_hash = selection_name = None
                     have_full_draw = False
                     continue
@@ -2695,7 +2702,8 @@ def main() -> int:
                 if key == "t": show_tags = not show_tags; have_full_draw = False; continue
                 if key == "d": show_added = not show_added; have_full_draw = False; continue
                 if key == "h": show_full_hash = not show_full_hash; have_full_draw = False; continue
-                if key == "n":
+                if key in ("n", "N"):
+                    narrow_mode_auto = False
                     narrow_mode = not narrow_mode
                     set_banner(f"Narrow mode {'ON' if narrow_mode else 'OFF'}")
                     have_full_draw = False
