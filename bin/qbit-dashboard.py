@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.9.6"
+VERSION = "1.10.2"
 LAST_UPDATED = "2026-02-13"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -44,6 +44,28 @@ FULL_TUI_MIN_WIDTH = 120
 
 class ColorScheme:
     """Color scheme management with YAML override support."""
+
+    # Type stubs for dynamically generated attributes
+    CYAN: str
+    BLUE: str
+    PURPLE: str
+    YELLOW: str
+    ORANGE: str
+    GREEN: str
+    LAVENDER: str
+    ERROR: str
+    FG_PRIMARY: str
+    FG_SECONDARY: str
+    FG_TERTIARY: str
+    BG_SELECTED: str
+    CYAN_BOLD: str
+    GREEN_BOLD: str
+    BLUE_BOLD: str
+    YELLOW_BOLD: str
+    ORANGE_BOLD: str
+    ERROR_BOLD: str
+    PURPLE_BOLD: str
+    SELECTION: str
 
     def __init__(self, yaml_path: Optional[Path] = None):
         """Initialize colors from YAML file or defaults."""
@@ -97,7 +119,7 @@ class ColorScheme:
     def _hex_to_rgb(self, hex_color: str) -> tuple[int, int, int]:
         """Convert hex color to RGB tuple."""
         hex_color = hex_color.lstrip('#')
-        return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        return (int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16))
 
     def _rgb_to_ansi_fg(self, r: int, g: int, b: int) -> str:
         """Generate ANSI 24-bit foreground color."""
@@ -147,6 +169,7 @@ class ColorScheme:
 
 LOCAL_TZ = ZoneInfo("America/New_York") if ZoneInfo else timezone.utc
 PRESET_FILE = Path(__file__).parent.parent / "config" / "qbit-filter-presets.yml"
+TRACKER_REGISTRY_FILE = Path(__file__).parent.parent / "config" / "tracker-registry.yml"
 TRACKERS_LIST_URL = "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt"
 QC_TAG_TOOL = Path(__file__).resolve().parent / "media_qc_tag.py"
 QC_LOG_DIR = Path.home() / ".logs" / "media_qc"
@@ -659,10 +682,8 @@ def truncate(value: str, max_len: int) -> str:
     if len(value) <= max_len:
         return value
     if max_len <= 1:
-        return value[:max_len]
-    if max_len <= 3:
-        return value[:max_len]
-    return value[: max_len - 3] + "..."
+        return "~"
+    return value[: max_len - 1] + "~"
 
 
 CACHE_DIR = Path(__file__).parent.parent / "cache" / "mediainfo"
@@ -890,6 +911,95 @@ def summary(torrents: list[dict]) -> str:
     return " ".join([f"{k}:{v}" for k, v in counts.items()])
 
 
+def draw_header_full_compact(
+    colors: ColorScheme,
+    api_url: str,
+    version: str,
+    torrents: list[dict],
+    scope: str,
+    sort_field: str,
+    sort_desc: bool,
+    page: int,
+    total_pages: int,
+    filters: list[dict],
+    width: int,
+) -> list[str]:
+    def short(value: str) -> str:
+        return truncate(value, width)
+
+    downloading = sum(1 for t in torrents if t.get("state") in STATE_DOWNLOAD)
+    seeding = sum(1 for t in torrents if t.get("state") in STATE_UPLOAD)
+    paused = sum(1 for t in torrents if t.get("state") in STATE_PAUSED)
+    completed = sum(1 for t in torrents if (t.get("progress") or 0) >= 1.0)
+    errors = sum(1 for t in torrents if t.get("state") in STATE_ERROR)
+
+    total_dl = sum(t.get("dlspeed", 0) or 0 for t in torrents)
+    total_ul = sum(t.get("upspeed", 0) or 0 for t in torrents)
+
+    def fmt_mib(v: int | float | None) -> str:
+        try:
+            x = float(v or 0) / (1024 * 1024)
+        except Exception:
+            x = 0.0
+        if x >= 100:
+            return f"{x:,.0f}"
+        if x >= 10:
+            return f"{x:,.1f}".rstrip("0").rstrip(".")
+        return f"{x:.1f}".rstrip("0").rstrip(".") or "0"
+
+    scope_display = scope.upper() if scope != "all" else "ALL"
+    sort_arrow = "↓" if sort_desc else "↑"
+    active_filters = len([f for f in filters if f.get("enabled", True)])
+
+    line1 = (
+        f"{colors.CYAN_BOLD}QBTUI{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}  "
+        f"{colors.FG_SECONDARY}@ {colors.BLUE}{api_url}{colors.RESET}  "
+        f"{colors.FG_SECONDARY}{datetime.now().strftime('%Y-%m-%d')}{colors.RESET}"
+    )
+    line2 = (
+        f"{colors.CYAN}DL MiB/s{colors.RESET} {colors.CYAN_BOLD}{fmt_mib(total_dl)}{colors.RESET}  "
+        f"{colors.BLUE}UL MiB/s{colors.RESET} {colors.BLUE_BOLD}{fmt_mib(total_ul)}{colors.RESET}  "
+        f"{colors.FG_SECONDARY}Dn:{downloading} Up:{seeding} Pa:{paused} Ok:{completed} Err:{errors}{colors.RESET}"
+    )
+    line3 = (
+        f"{colors.FG_SECONDARY}Scope:{colors.RESET} {colors.YELLOW_BOLD}{scope_display}{colors.RESET}  "
+        f"{colors.FG_SECONDARY}Sort:{colors.RESET} {colors.YELLOW}{sort_field} {sort_arrow}{colors.RESET}  "
+        f"{colors.FG_SECONDARY}Pg:{page + 1}/{total_pages}{colors.RESET}  "
+        f"{colors.FG_SECONDARY}Filters:{active_filters}{colors.RESET}"
+    )
+    return [short(line1), short(line2), short(line3), "-" * width]
+
+
+def draw_footer_full_compact(
+    colors: ColorScheme,
+    width: int,
+    has_selection: bool = False,
+    macros: list[dict] | None = None,
+) -> list[str]:
+    def short(value: str) -> str:
+        return truncate(value, width)
+
+    if has_selection:
+        actions = "P pause  V verify  C category  E tags  T trackers  Q qc  D delete"
+    else:
+        actions = "(Select torrent for actions)"
+    line1 = f"{colors.FG_SECONDARY}Actions:{colors.RESET} {actions}"
+    line2 = (
+        f"{colors.FG_SECONDARY}Nav:{colors.RESET} ↑/↓ move  PgUp/Dn page  Space select  Enter details  Tab tabs  "
+        f"{colors.FG_SECONDARY}View:{colors.RESET} ? help  q quit"
+    )
+    lines = ["-" * width, short(line1), short(line2)]
+    if macros:
+        items = [f"{idx}:{m.get('desc','')[:12]}" for idx, m in enumerate(macros[:9], start=1)]
+        line3 = (
+            f"{colors.FG_SECONDARY}Macros:{colors.RESET} " +
+            "  ".join(items) +
+            f"  {colors.FG_TERTIARY}[M menu, Shift+# direct]{colors.RESET}"
+        )
+        lines.append(short(line3))
+    return lines
+
+
 # ============================================================================
 # HEADER & FOOTER REDESIGN (v1.7.0)
 # ============================================================================
@@ -1043,7 +1153,7 @@ def draw_footer_v2(
     context: str,
     width: int,
     has_selection: bool = False,
-    macros: list[dict] = None
+    macros: list[dict] | None = None
 ) -> list[str]:
     """
     Render context-sensitive grouped footer.
@@ -1165,28 +1275,92 @@ def draw_footer_v2(
     return lines
 
 
-def build_rows(torrents: list[dict]) -> list[dict]:
+def load_tracker_keyword_map(path: Path) -> dict[str, str]:
+    if not path.exists() or yaml is None:
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+        trackers = data.get("trackers") or {}
+        keyword_to_trackers: dict[str, set[str]] = {}
+        for tracker_key, tracker_cfg in trackers.items():
+            if not isinstance(tracker_cfg, dict):
+                continue
+            key = str(tracker_key).strip()
+            if not key:
+                continue
+            key_l = key.lower()
+            keyword_to_trackers.setdefault(key_l, set()).add(key)
+            qbm = tracker_cfg.get("qbitmanage") or {}
+            tags = qbm.get("tags") or []
+            if isinstance(tags, list):
+                for tag in tags:
+                    tag_s = str(tag).strip().lower()
+                    if tag_s:
+                        keyword_to_trackers.setdefault(tag_s, set()).add(key)
+
+        # Keep only unambiguous aliases; this avoids generic shared tags
+        # (e.g. "private") mapping to the wrong tracker.
+        result: dict[str, str] = {}
+        for keyword, owners in keyword_to_trackers.items():
+            if len(owners) == 1:
+                result[keyword] = next(iter(owners))
+        return result
+    except Exception:
+        return {}
+
+
+def resolve_tracker_from_tags(tags_value: str, tracker_keyword_map: dict[str, str]) -> str:
+    if not tracker_keyword_map:
+        return "-"
+    for tag in [t.strip().lower() for t in (tags_value or "").split(",") if t.strip()]:
+        if tag in tracker_keyword_map:
+            return tracker_keyword_map[tag]
+    return "-"
+
+
+def build_rows(torrents: list[dict], tracker_keyword_map: dict[str, str]) -> list[dict]:
     rows = []
     for t in torrents:
-        progress = t.get("progress")
-        if isinstance(progress, (int, float)):
-            progress = f"{int(progress * 100)}%"
-        elif progress is None:
-            progress = "-"
+        progress_raw = t.get("progress")
+        tags_value = t.get("tags") or "-"
+        progress = "-"
+        progress_pct = "-"
+        if isinstance(progress_raw, (int, float)):
+            pct = int(progress_raw * 100)
+            progress = f"{pct}%"
+            progress_pct = str(pct)
+        elif progress_raw is not None:
+            progress = str(progress_raw)
+        uploaded_raw = t.get("uploaded")
+        if not isinstance(uploaded_raw, (int, float)):
+            uploaded_raw = t.get("total_uploaded")
+        if not isinstance(uploaded_raw, (int, float)):
+            uploaded_raw = t.get("uploaded_session")
+        seeds_raw = t.get("num_seeds")
+        if not isinstance(seeds_raw, (int, float)):
+            seeds_raw = t.get("num_complete")
+        peers_raw = t.get("num_leechs")
+        if not isinstance(peers_raw, (int, float)):
+            peers_raw = t.get("num_incomplete")
         rows.append({
             "name": t.get("name", ""),
             "state": t.get("state", ""),
             "st": STATE_CODE.get(t.get("state", ""), "?"),
             "progress": progress,
+            "progress_pct": progress_pct,
             "size": size_str(t.get("size") or t.get("total_size")),
             "ratio": f"{t.get('ratio', 0):.2f}" if isinstance(t.get("ratio"), (int, float)) else "-",
             "dlspeed": speed_str(t.get("dlspeed")),
             "upspeed": speed_str(t.get("upspeed")),
+            "uploaded_raw": uploaded_raw if isinstance(uploaded_raw, (int, float)) else 0,
+            "seeds": int(seeds_raw) if isinstance(seeds_raw, (int, float)) else 0,
+            "peers": int(peers_raw) if isinstance(peers_raw, (int, float)) else 0,
             "eta": eta_str(t.get("eta")),
             "added": added_str(t.get("added_on")),
             "added_short": added_short_str(t.get("added_on")),
+            "tracker": resolve_tracker_from_tags(str(tags_value), tracker_keyword_map),
             "category": t.get("category") or "-",
-            "tags": t.get("tags") or "-",
+            "tags": tags_value,
             "hash": t.get("hash") or "",
             "raw": t,
         })
@@ -1925,6 +2099,7 @@ def main() -> int:
     presets = load_presets(PRESET_FILE)
     macro_config_path = Path(__file__).parent.parent / "config" / "macros.yaml"
     macros_global = load_macros(macro_config_path)
+    tracker_keyword_map = load_tracker_keyword_map(TRACKER_REGISTRY_FILE)
     macros_mtime = macro_config_path.stat().st_mtime if macro_config_path.exists() else -1.0
     last_macro_check = 0.0
     sort_fields = ["added_on", "name", "state", "ratio", "progress", "eta", "size", "dlspeed", "upspeed"]
@@ -2094,76 +2269,185 @@ def main() -> int:
             sys.stdout.flush()
             output_buffer = ""
 
-    def build_list_block(page_rows_local: list[dict]) -> list[str]:
+    def build_list_block(page_rows_local: list[dict], content_width_local: int) -> list[str]:
         lines: list[str] = []
-        lines.append(header_line)
-        lines.append(divider_line)
+
+        def fmt_scaled(value: int | float | None, scale: float) -> str:
+            try:
+                x = float(value or 0) / scale
+            except Exception:
+                x = 0.0
+            if x <= 0:
+                return "0"
+            if x >= 100:
+                return f"{x:,.0f}"
+            return f"{x:,.1f}".rstrip("0").rstrip(".")
+
+        def fmt_eta_minutes(value: int | float | None) -> str:
+            try:
+                sec = int(value or 0)
+            except Exception:
+                sec = 0
+            if sec <= 0 or sec >= 8640000:
+                return "-"
+            return str(max(1, int(round(sec / 60))))
+
+        w = {
+            "f": 1,
+            "no": max(2, len(str(max(0, len(page_rows_local) - 1)))),
+            "st": 2,
+            "name": 44,
+            "trk": 8,
+            "cat": 8,
+            "pct": 3,
+            "sz": 6,
+            "up": 6,
+            "dl": 6,
+            "ul": 6,
+            "sd": 4,
+            "pr": 4,
+            "eta": 4,
+            "add": 11 if show_added else 0,
+            "hash": 40 if show_full_hash else 6,
+        }
+        mins = {
+            "name": 10,
+            "trk": 3,
+            "cat": 3,
+            "hash": 12 if show_full_hash else 6,
+            "add": 8 if show_added else 0,
+            "sz": 4,
+            "up": 4,
+            "dl": 4,
+            "ul": 4,
+            "sd": 2,
+            "pr": 2,
+            "eta": 2,
+            "pct": 2,
+            "no": 1,
+        }
+
+        cols = ["f", "no", "st", "name", "trk", "cat", "pct", "sz", "up", "dl", "ul", "sd", "pr", "eta"]
+        if show_added:
+            cols.append("add")
+        cols.append("hash")
+
+        def total_width() -> int:
+            return sum(w[c] for c in cols) + (len(cols) - 1)
+
+        overflow = max(0, total_width() - content_width_local)
+
+        def shrink(key: str) -> None:
+            nonlocal overflow
+            dec = min(overflow, max(0, w[key] - mins[key]))
+            w[key] -= dec
+            overflow -= dec
+
+        for key in ("name", "trk", "cat", "hash", "add", "sz", "up", "dl", "ul", "sd", "pr", "eta", "pct", "no"):
+            if overflow <= 0:
+                break
+            if key in w:
+                shrink(key)
+
+        headers = {
+            "f": "F",
+            "no": "No",
+            "st": "ST",
+            "name": "Name",
+            "trk": "Trk",
+            "cat": "Cat",
+            "pct": "%",
+            "sz": "SzGiB",
+            "up": "UpGiB",
+            "dl": "DLMiB",
+            "ul": "ULMiB",
+            "sd": "Sd",
+            "pr": "Pr",
+            "eta": "ETAm",
+            "add": "Added",
+            "hash": "Hash",
+        }
+        right_cols = {"no", "pct", "sz", "up", "dl", "ul", "sd", "pr", "eta"}
+
+        def cell(key: str, value: str) -> str:
+            text = truncate(str(value), w[key])
+            return text.rjust(w[key]) if key in right_cols else text.ljust(w[key])
+
+        lines.append(" ".join(cell(c, headers[c]) for c in cols))
+        lines.append("-" * content_width_local)
+
         for idx, item in enumerate(page_rows_local, 0):
             selected = selection_hash == item.get("hash")
             status_col = colors.status_color(item.get("state") or "")
-            name = (item.get("name") or "")[:name_width]
-            st = item.get("st") or "?"
-            cat_val = str(item.get("category") or "-")
-            added_value = f"{str(item.get('added') or '-'): <16} " if show_added else ""
+            focus_marker = ">" if idx == focus_idx else " "
+            raw = item.get("raw") or {}
+
             hash_value = str(item.get("hash") or "")
             hash_display = hash_value if show_full_hash else hash_value[:6] or "-"
-            focus_marker = ">" if idx == focus_idx else " "
+            pct_value = str(item.get("progress_pct") or "-")
+            size_raw = raw.get("size") or raw.get("total_size") or 0
+            values = {
+                "f": focus_marker,
+                "no": str(idx),
+                "st": str(item.get("st") or "?"),
+                "name": str(item.get("name") or "-"),
+                "trk": str(item.get("tracker") or "-"),
+                "cat": str(item.get("category") or "-"),
+                "pct": pct_value,
+                "sz": fmt_scaled(size_raw, 1024.0 ** 3),
+                "up": fmt_scaled(item.get("uploaded_raw"), 1024.0 ** 3),
+                "dl": fmt_scaled(raw.get("dlspeed") or 0, 1024.0 ** 2),
+                "ul": fmt_scaled(raw.get("upspeed") or 0, 1024.0 ** 2),
+                "sd": f"{int(item.get('seeds') or 0):,}",
+                "pr": f"{int(item.get('peers') or 0):,}",
+                "eta": fmt_eta_minutes(raw.get("eta")),
+                "add": str(item.get("added_short") or "-"),
+                "hash": hash_display,
+            }
+
             if selected:
-                base_line = (
-                    f"{focus_marker:<1} {idx:<2} {st:<2} "
-                    f"{name:<{name_width}} "
-                    f"{str(item.get('progress') or '-'): <6} "
-                    f"{str(item.get('size') or '-'): <{size_width}} "
-                    f"{str(item.get('dlspeed') or '-'): <8} "
-                    f"{str(item.get('upspeed') or '-'): <8} "
-                    f"{str(item.get('eta') or '-'): <6} "
-                    f"{added_value}"
-                    f"{cat_val:<{cat_width}} "
-                    f"{hash_display:<{hash_width}}"
-                )
-                lines.append(f"{colors.SELECTION}{base_line}{colors.RESET}")
+                plain = " ".join(cell(c, values[c]) for c in cols)
+                lines.append(f"{colors.SELECTION}{plain}{colors.RESET}")
             else:
-                focus_col = f"{colors.CYAN}{focus_marker}{colors.RESET}" if idx == focus_idx else " "
-                base_line = (
-                    f"{focus_col:<1} {idx:<2} {status_col}{st:<2}{colors.RESET} "
-                    f"{status_col}{name:<{name_width}}{colors.RESET} "
-                    f"{str(item.get('progress') or '-'): <6} "
-                    f"{str(item.get('size') or '-'): <{size_width}} "
-                    f"{str(item.get('dlspeed') or '-'): <8} "
-                    f"{str(item.get('upspeed') or '-'): <8} "
-                    f"{str(item.get('eta') or '-'): <6} "
-                    f"{added_value}"
-                    f"{colors.PURPLE}{cat_val:<{cat_width}}{colors.RESET} "
-                    f"{hash_display:<{hash_width}}"
-                )
-                lines.append(base_line)
+                row_parts = []
+                for c in cols:
+                    piece = cell(c, values[c])
+                    if c == "f" and idx == focus_idx:
+                        row_parts.append(f"{colors.CYAN}{piece}{colors.RESET}")
+                    elif c in ("st", "name"):
+                        row_parts.append(f"{status_col}{piece}{colors.RESET}")
+                    elif c == "trk":
+                        row_parts.append(f"{colors.ORANGE}{piece}{colors.RESET}")
+                    elif c == "cat":
+                        row_parts.append(f"{colors.PURPLE}{piece}{colors.RESET}")
+                    else:
+                        row_parts.append(piece)
+                lines.append(" ".join(row_parts))
 
             if show_mediainfo_inline:
                 raw_item = item.get("raw") or {}
                 content_path = get_content_path(raw_item)
-                # Use background_only=True to prevent blocking draw
                 mi_summary = get_mediainfo_summary_cached(str(item.get("hash") or ""), content_path, background_only=True)
-                indent = "     "
-
-                # Colorize inline MediaInfo summary
+                indent = "     mi: "
+                width = max(10, content_width_local - len(indent))
                 if mi_summary and " • " in mi_summary:
                     parts = mi_summary.split(" • ")
                     colored_parts = []
                     for part in parts:
                         part = part.strip()
-                        # Bitrates and sizes → yellow
                         if any(unit in part.lower() for unit in ["b/s", "gb", "mb", "kb", "bits"]):
                             colored_parts.append(f"{colors.YELLOW}{part}{colors.RESET}")
-                        # Container formats → lavender
                         elif part in ["Matroska", "MPEG-4", "AVI", "MP4", "MKV", "WebM"]:
                             colored_parts.append(f"{colors.LAVENDER}{part}{colors.RESET}")
-                        # Default → primary (white)
                         else:
                             colored_parts.append(f"{colors.FG_PRIMARY}{part}{colors.RESET}")
-                    mi_summary = f"{colors.FG_SECONDARY} • {colors.RESET}".join(colored_parts)
-                    lines.append(f"{indent}{mi_summary}")
+                    mi_line = f"{colors.FG_SECONDARY} • {colors.RESET}".join(colored_parts)
+                    for line in wrap_ansi(mi_line, width):
+                        lines.append(indent + line)
                 else:
-                    lines.append(f"{indent}{colors.FG_TERTIARY}{mi_summary}{colors.RESET}")
+                    mi_line = mi_summary or "MediaInfo pending..."
+                    for line in wrap_ansi(f"{colors.FG_TERTIARY}{mi_line}{colors.RESET}", width):
+                        lines.append(indent + line)
 
             if show_tags:
                 tags_raw = str(item.get("tags") or "").strip()
@@ -2178,7 +2462,7 @@ def main() -> int:
                             tag_parts.append(f"{colors.PURPLE}{tag}{colors.RESET}")
                     tags_line = ", ".join(tag_parts)
                     indent = "     tags: "
-                    width = max(40, term_w - len(indent))
+                    width = max(10, content_width_local - len(indent))
                     for line in wrap_ansi(tags_line, width):
                         lines.append(indent + line)
         return lines
@@ -2186,12 +2470,13 @@ def main() -> int:
     def build_narrow_list_block(page_rows_local: list[dict], content_width_local: int) -> list[str]:
         lines: list[str] = []
         no_width = max(2, len(str(max(0, len(page_rows_local) - 1))))
-        cat_width = 4
+        trk_width = min(12, 6 + max(0, content_width_local - 96) // 12)
+        cat_width = min(16, 8 + max(0, content_width_local - 96) // 10)
         added_width = 11
         pct_width = 4
-        reserved_width = 28 + no_width
+        reserved_width = 25 + no_width + trk_width + cat_width
         name_width = max(1, content_width_local - reserved_width)
-        narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Name':<{name_width}} {'Cat':<{cat_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
+        narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Name':<{name_width}} {'Trk':<{trk_width}} {'Cat':<{cat_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
         narrow_divider = "-" * content_width_local
 
         lines.append(truncate(narrow_header, content_width_local))
@@ -2202,12 +2487,13 @@ def main() -> int:
             focus_marker = ">" if idx == focus_idx else " "
             st = str(item.get("st") or "?")
             name = truncate(str(item.get("name") or "-"), name_width).ljust(name_width)
+            trk = truncate(str(item.get("tracker") or "-"), trk_width).ljust(trk_width)
             cat = truncate(str(item.get("category") or "-"), cat_width).ljust(cat_width)
             added_short = str(item.get("added_short") or "-")[:added_width].ljust(added_width)
             pct_value = str(item.get("progress") or "-")
             pct = truncate(pct_value, pct_width).rjust(pct_width)
 
-            row_plain = f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {name} {cat} {added_short} {pct}"
+            row_plain = f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {name} {trk} {cat} {added_short} {pct}"
             row_plain = row_plain[:content_width_local].ljust(content_width_local)
 
             if selected:
@@ -2217,8 +2503,9 @@ def main() -> int:
                 st_colored = f"{status_col}{st:<2}{colors.RESET}"
                 name_colored = f"{status_col}{name}{colors.RESET}"
                 focus_col = f"{colors.CYAN}{focus_marker}{colors.RESET}" if idx == focus_idx else " "
+                trk_colored = f"{colors.ORANGE}{trk}{colors.RESET}"
                 cat_colored = f"{colors.PURPLE}{cat}{colors.RESET}"
-                line = f"{focus_col} {idx:<{no_width}} {st_colored} {name_colored} {cat_colored} {added_short} {pct}"
+                line = f"{focus_col} {idx:<{no_width}} {st_colored} {name_colored} {trk_colored} {cat_colored} {added_short} {pct}"
                 if visible_len(line) > content_width_local:
                     line = truncate(line, content_width_local)
                 else:
@@ -2348,7 +2635,7 @@ def main() -> int:
 
         # Bootstrap queue if empty
         if not mi_bootstrap_done:
-            mi_queue = [r.get("hash") for r in rows_sorted if r.get("hash")]
+            mi_queue = [str(r.get("hash")) for r in rows_sorted if r.get("hash")]
             mi_bootstrap_done = True
             mi_queue_index = 0
 
@@ -2385,7 +2672,7 @@ def main() -> int:
                 else:
                     try:
                         torrents = json.loads(raw) if raw else []
-                        rows = build_rows(torrents)
+                        rows = build_rows(torrents, tracker_keyword_map)
                         cached_torrents = torrents
                         cached_rows = rows
                         data_changed = True
@@ -2453,32 +2740,14 @@ def main() -> int:
                     short_hash = (selection_hash or "")[:10]
                     banner_line = f"{colors.CYAN_BOLD}Selected:{colors.RESET} {selection_name} ({short_hash})"
 
-                scope_label = scope.upper()
-                page_label = f"Page {page + 1}/{total_pages}"
-                sort_label = f"{sort_field} ({'desc' if sort_desc else 'asc'})"
-
-                name_width = 52
-                size_width = 12
-                cat_width = 14
-                hash_width = 40 if show_full_hash else 6
-                hash_label = "Hash"
-                added_part = f"{'Added':<16} " if show_added else ""
-
-                header_line = (
-                    f"{'F':<1} {'No':<2} {'ST':<2} "
-                    f"{'Name':<{name_width}} "
-                    f"{'Prog':<6} {'Size':<{size_width}} {'DL':<8} {'UL':<8} {'ETA':<6} "
-                    f"{added_part}{'Cat':<{cat_width}} {hash_label:<{hash_width}}"
-                )
                 if narrow_mode and not in_tab_view:
                     content_width = term_w
                     divider_line = "-" * content_width
                     list_block_lines = build_narrow_list_block(page_rows, content_width)
                 else:
-                    # Use content width for consistent layout
-                    content_width = min(len(header_line), term_w)
+                    content_width = term_w
                     divider_line = "-" * content_width
-                    list_block_lines = build_list_block(page_rows)
+                    list_block_lines = build_list_block(page_rows, content_width)
 
                 if in_tab_view and selection_hash:
                     output_buffer = "\033[H\033[J" # Start with clear
@@ -2559,8 +2828,7 @@ def main() -> int:
                                 width=content_width
                             )
                         else:
-                            # Render new v2 header
-                            header_lines = draw_header_v2(
+                            header_lines = draw_header_full_compact(
                                 colors=colors,
                                 api_url=api_url,
                                 version=VERSION,
@@ -2612,23 +2880,27 @@ def main() -> int:
                     print_at(row, format_filters_line(filters, colors)); row += 1
                     print_at(row, divider_line); row += 1
 
-                # Determine footer context
-                footer_context = "main"
                 if in_tab_view and selection_hash:
+                    footer_context = "main"
                     active_label = tabs[active_tab] if active_tab < len(tabs) else "Info"
                     if active_label == "Trackers":
                         footer_context = "trackers"
                     elif active_label == "MediaInfo":
                         footer_context = "mediainfo"
-
-                # Render new v2 footer
-                footer_lines = draw_footer_v2(
-                    colors=colors,
-                    context=footer_context,
-                    width=content_width,
-                    has_selection=bool(selection_hash),
-                    macros=macros_global
-                )
+                    footer_lines = draw_footer_v2(
+                        colors=colors,
+                        context=footer_context,
+                        width=content_width,
+                        has_selection=bool(selection_hash),
+                        macros=macros_global
+                    )
+                else:
+                    footer_lines = draw_footer_full_compact(
+                        colors=colors,
+                        width=content_width,
+                        has_selection=bool(selection_hash),
+                        macros=macros_global,
+                    )
 
                 for line in footer_lines:
                     print_at(row, line)
