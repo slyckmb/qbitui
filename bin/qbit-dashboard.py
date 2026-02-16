@@ -2573,7 +2573,7 @@ def main() -> int:
                 res = ""
                 if tmp_path.exists():
                     res = tmp_path.read_text().strip()
-                    tmp_path.unlink()
+                    tmp_path.unlink(missing_ok=True)
                 
                 if res:
                     parts = [p.strip() for p in res.split("|") if p.strip()]
@@ -2590,7 +2590,7 @@ def main() -> int:
                 proc.kill()
                 handle.close()
                 tmp_path = CACHE_DIR / f"{h}.tmp"
-                if tmp_path.exists(): tmp_path.unlink()
+                if tmp_path.exists(): tmp_path.unlink(missing_ok=True)
                 (CACHE_DIR / f"{h}.summary").write_text("MI: timeout")
                 del ACTIVE_MI_PROCESSES[h]
 
