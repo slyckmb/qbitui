@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.10.7"
+VERSION = "1.10.8"
 LAST_UPDATED = "2026-02-23"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -3047,10 +3047,18 @@ def main() -> int:
                     need_redraw_help = True
                     
                     while True:
+                        global NEED_RESIZE
+                        if NEED_RESIZE:
+                            need_redraw_help = True
+                            NEED_RESIZE = False
+
                         rows_term, cols_term = shutil.get_terminal_size()
                         view_height = max(5, rows_term - 2)
                         
                         if need_redraw_help:
+                            # Clamp scroll offset
+                            scroll_offset = max(0, min(scroll_offset, max(0, len(help_lines) - view_height)))
+                            
                             # Build frame
                             frame = "\033[H\033[2J" # Clear and move to top
                             visible_lines = help_lines[scroll_offset : scroll_offset + view_height]
@@ -3058,8 +3066,10 @@ def main() -> int:
                                 frame += line + "\r\n"
                             
                             # Render footer
-                            progress = int((scroll_offset / max(1, len(help_lines) - view_height)) * 100)
-                            if len(help_lines) <= view_height: progress = 100
+                            progress = 100
+                            if len(help_lines) > view_height:
+                                progress = int((scroll_offset / (len(help_lines) - view_height)) * 100)
+                            
                             footer_text = f"{colors.FG_SECONDARY}[Help] Scroll: ↑/↓ (or ' /), , . (page)  Exit: q Esc Enter  ({progress}%){colors.RESET}"
                             frame += f"\033[{rows_term};1H{footer_text}"
                             
@@ -3067,11 +3077,12 @@ def main() -> int:
                             sys.stdout.flush()
                             need_redraw_help = False
                         
-                        keys_in = read_input_queue()
-                        if not keys_in:
-                            select.select([sys.stdin], [], [], 0.1)
+                        # Wait for input
+                        r_in, _, _ = select.select([sys.stdin], [], [], 0.1)
+                        if not r_in:
                             continue
                         
+                        keys_in = read_input_queue()
                         exit_help = False
                         for k in keys_in:
                             if k in ("q", "Q", "\x1b", "\r", "\n", " "): 
@@ -3086,11 +3097,13 @@ def main() -> int:
                                     scroll_offset += 1
                                     need_redraw_help = True
                             elif k == ",": 
-                                scroll_offset = max(0, scroll_offset - (view_height // 2))
-                                need_redraw_help = True
+                                if scroll_offset > 0:
+                                    scroll_offset = max(0, scroll_offset - (view_height // 2))
+                                    need_redraw_help = True
                             elif k == ".": 
-                                scroll_offset = min(max(0, len(help_lines) - view_height), scroll_offset + (view_height // 2))
-                                need_redraw_help = True
+                                if scroll_offset < len(help_lines) - view_height:
+                                    scroll_offset = min(len(help_lines) - view_height, scroll_offset + (view_height // 2))
+                                    need_redraw_help = True
                         
                         if exit_help: break
 
