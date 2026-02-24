@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.10.6"
+VERSION = "1.10.7"
 LAST_UPDATED = "2026-02-23"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -3043,30 +3043,33 @@ def main() -> int:
                         help_lines.append(f"{m['code']:<5} {m['api']:<20} {m['desc']:<30}")
 
                     scroll_offset = 0
-                    tty.setraw(fd) # Enable raw mode once
+                    tty.setraw(fd)
+                    need_redraw_help = True
                     
                     while True:
                         rows_term, cols_term = shutil.get_terminal_size()
                         view_height = max(5, rows_term - 2)
                         
-                        sys.stdout.write("\033[H\033[2J") # Clear screen and move to top
-                        
-                        # Render visible slice
-                        visible_lines = help_lines[scroll_offset : scroll_offset + view_height]
-                        for line in visible_lines:
-                            sys.stdout.write(line + "\r\n")
-                        
-                        # Render footer
-                        progress = int((scroll_offset / max(1, len(help_lines) - view_height)) * 100)
-                        if len(help_lines) <= view_height: progress = 100
-                        
-                        footer_text = f"{colors.FG_SECONDARY}[Help] Scroll: ↑/↓ (or ' /), , . (page)  Exit: q Esc Enter  ({progress}%){colors.RESET}"
-                        sys.stdout.write(f"\033[{rows_term};1H{footer_text}")
-                        sys.stdout.flush()
+                        if need_redraw_help:
+                            # Build frame
+                            frame = "\033[H\033[2J" # Clear and move to top
+                            visible_lines = help_lines[scroll_offset : scroll_offset + view_height]
+                            for line in visible_lines:
+                                frame += line + "\r\n"
+                            
+                            # Render footer
+                            progress = int((scroll_offset / max(1, len(help_lines) - view_height)) * 100)
+                            if len(help_lines) <= view_height: progress = 100
+                            footer_text = f"{colors.FG_SECONDARY}[Help] Scroll: ↑/↓ (or ' /), , . (page)  Exit: q Esc Enter  ({progress}%){colors.RESET}"
+                            frame += f"\033[{rows_term};1H{footer_text}"
+                            
+                            sys.stdout.write(frame)
+                            sys.stdout.flush()
+                            need_redraw_help = False
                         
                         keys_in = read_input_queue()
                         if not keys_in:
-                            select.select([sys.stdin], [], [], 0.2)
+                            select.select([sys.stdin], [], [], 0.1)
                             continue
                         
                         exit_help = False
@@ -3075,13 +3078,19 @@ def main() -> int:
                                 exit_help = True
                                 break
                             if k == "'": 
-                                scroll_offset = max(0, scroll_offset - 1)
+                                if scroll_offset > 0:
+                                    scroll_offset -= 1
+                                    need_redraw_help = True
                             elif k == "/": 
-                                scroll_offset = min(max(0, len(help_lines) - view_height), scroll_offset + 1)
+                                if scroll_offset < len(help_lines) - view_height:
+                                    scroll_offset += 1
+                                    need_redraw_help = True
                             elif k == ",": 
                                 scroll_offset = max(0, scroll_offset - (view_height // 2))
+                                need_redraw_help = True
                             elif k == ".": 
                                 scroll_offset = min(max(0, len(help_lines) - view_height), scroll_offset + (view_height // 2))
+                                need_redraw_help = True
                         
                         if exit_help: break
 
