@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.10.12"
+VERSION = "1.10.13"
 LAST_UPDATED = "2026-02-23"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -191,6 +191,7 @@ MEDIA_EXTS = {
 
 STATUS_MAPPING = [
     {"code": "A",   "api": "allocating",          "group": "downloading", "desc": "Allocating space"},
+    {"code": "A",   "api": "preallocating",       "group": "downloading", "desc": "Preallocating"},
     {"code": "D",   "api": "downloading",         "group": "downloading", "desc": "Downloading"},
     {"code": "CD",  "api": "checkingDL",          "group": "checking",    "desc": "Checking Download"},
     {"code": "FD",  "api": "forcedDL",            "group": "downloading", "desc": "Forced Download"},
@@ -211,6 +212,7 @@ STATUS_MAPPING = [
     {"code": "SU",  "api": "stalledUP",           "group": "uploading",   "desc": "Stalled Upload"},
     {"code": "QC",  "api": "queuedForChecking",   "group": "checking",    "desc": "Queued for Checking"},
     {"code": "CR",  "api": "checkingResumeData",  "group": "checking",    "desc": "Checking Resume Data"},
+    {"code": "C",   "api": "checking",            "group": "checking",    "desc": "Checking"},
     {"code": "MV",  "api": "moving",              "group": "other",       "desc": "Moving"},
     {"code": "?",   "api": "unknown",             "group": "other",       "desc": "Unknown"},
     {"code": "OK",  "api": "completed",           "group": "completed",   "desc": "Completed"},
