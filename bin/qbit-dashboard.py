@@ -34,8 +34,8 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.10.2"
-LAST_UPDATED = "2026-02-13"
+VERSION = "1.10.3"
+LAST_UPDATED = "2026-02-23"
 FULL_TUI_MIN_WIDTH = 120
 
 # ============================================================================
@@ -189,35 +189,55 @@ MEDIA_EXTS = {
     ".wav", ".wma", ".wv"
 }
 
-STATE_DOWNLOAD = {"downloading", "stalledDL", "queuedDL", "forcedDL", "metaDL"}
-STATE_UPLOAD = {"uploading", "stalledUP", "queuedUP", "forcedUP"}
-STATE_PAUSED = {"pausedDL", "pausedUP", "stoppedDL", "stoppedUP"}
-STATE_ERROR = {"error", "missingFiles"}
-STATE_CHECKING = {"checkingUP", "checkingDL", "checkingResumeData", "checking"}
-STATE_COMPLETED = {"completed"}
+STATUS_MAPPING = [
+    {"code": "A",   "api": "allocating",          "group": "downloading", "desc": "Allocating space"},
+    {"code": "D",   "api": "downloading",         "group": "downloading", "desc": "Downloading"},
+    {"code": "CD",  "api": "checkingDL",          "group": "checking",    "desc": "Checking Download"},
+    {"code": "FD",  "api": "forcedDL",            "group": "downloading", "desc": "Forced Download"},
+    {"code": "MD",  "api": "metaDL",              "group": "downloading", "desc": "Downloading Metadata"},
+    {"code": "FMD", "api": "forcedMetaDL",        "group": "downloading", "desc": "Forced Metadata DL"},
+    {"code": "PD",  "api": "pausedDL",            "group": "paused",      "desc": "Paused Download"},
+    {"code": "PD",  "api": "stoppedDL",           "group": "paused",      "desc": "Stopped Download"}, # v5 alias
+    {"code": "QD",  "api": "queuedDL",            "group": "downloading", "desc": "Queued Download"},
+    {"code": "SD",  "api": "stalledDL",           "group": "downloading", "desc": "Stalled Download"},
+    {"code": "E",   "api": "error",               "group": "error",       "desc": "Error"},
+    {"code": "MF",  "api": "missingFiles",        "group": "error",       "desc": "Missing Files"},
+    {"code": "U",   "api": "uploading",           "group": "uploading",   "desc": "Uploading"},
+    {"code": "CU",  "api": "checkingUP",          "group": "checking",    "desc": "Checking Upload"},
+    {"code": "FU",  "api": "forcedUP",            "group": "uploading",   "desc": "Forced Upload"},
+    {"code": "PU",  "api": "pausedUP",            "group": "paused",      "desc": "Paused Upload"},
+    {"code": "PU",  "api": "stoppedUP",           "group": "paused",      "desc": "Stopped Upload"}, # v5 alias
+    {"code": "QU",  "api": "queuedUP",            "group": "uploading",   "desc": "Queued Upload"},
+    {"code": "SU",  "api": "stalledUP",           "group": "uploading",   "desc": "Stalled Upload"},
+    {"code": "QC",  "api": "queuedForChecking",   "group": "checking",    "desc": "Queued for Checking"},
+    {"code": "CR",  "api": "checkingResumeData",  "group": "checking",    "desc": "Checking Resume Data"},
+    {"code": "MV",  "api": "moving",              "group": "other",       "desc": "Moving"},
+    {"code": "?",   "api": "unknown",             "group": "other",       "desc": "Unknown"},
+    {"code": "OK",  "api": "completed",           "group": "completed",   "desc": "Completed"},
+]
 
-STATE_CODE = {
-    "allocating": "A",
-    "downloading": "D",
-    "checkingDL": "CD",
-    "forcedDL": "FD",
-    "metaDL": "MD",
-    "pausedDL": "PD",
-    "queuedDL": "QD",
-    "stalledDL": "SD",
-    "stoppedDL": "PD",
-    "error": "E",
-    "missingFiles": "MF",
-    "uploading": "U",
-    "checkingUP": "CU",
-    "forcedUP": "FU",
-    "pausedUP": "PU",
-    "queuedUP": "QU",
-    "stalledUP": "SU",
-    "stoppedUP": "PU",
-    "queuedForChecking": "QC",
-    "checkingResumeData": "CR",
-    "moving": "MV",
+# Generate derived lookups
+STATE_CODE = {item["api"]: item["code"] for item in STATUS_MAPPING}
+STATE_DOWNLOAD = {item["api"] for item in STATUS_MAPPING if item["group"] == "downloading"}
+STATE_UPLOAD = {item["api"] for item in STATUS_MAPPING if item["group"] == "uploading"}
+STATE_PAUSED = {item["api"] for item in STATUS_MAPPING if item["group"] == "paused"}
+STATE_ERROR = {item["api"] for item in STATUS_MAPPING if item["group"] == "error"}
+STATE_CHECKING = {item["api"] for item in STATUS_MAPPING if item["group"] == "checking"}
+STATE_COMPLETED = {item["api"] for item in STATUS_MAPPING if item["group"] == "completed"}
+
+# Build filter map
+STATUS_FILTER_MAP = {
+    "downloading": STATE_DOWNLOAD,
+    "seeding": STATE_UPLOAD,
+    "completed": STATE_COMPLETED,
+    "paused": STATE_PAUSED,
+    "errored": STATE_ERROR,
+    "checking": STATE_CHECKING,
+    "stalleddownloading": {"stalledDL"},
+    "stalleduploading": {"stalledUP"},
+    "stalled": {"stalledDL", "stalledUP"},
+    "active": STATE_DOWNLOAD | STATE_UPLOAD,
+    "inactive": STATE_PAUSED | {"stalledDL", "stalledUP"},
 }
 
 
@@ -1492,7 +1512,16 @@ def parse_filter_line(line: str, existing: list[dict]) -> list[dict]:
     updates: dict[str, dict] = {}
     for token in tokens:
         if "=" not in token:
+            # Treat as text filter
+            value = token.strip()
+            if not value: continue
+            negate = False
+            if value.startswith("!"):
+                negate = True
+                value = value[1:]
+            updates["text"] = {"type": "text", "value": value, "enabled": True, "negate": negate}
             continue
+
         key, value = token.split("=", 1)
         key = key.strip().lower()
         value = value.strip()
@@ -1515,6 +1544,19 @@ def parse_filter_line(line: str, existing: list[dict]) -> list[dict]:
             if parsed:
                 parsed["enabled"] = True
                 updates["tag"] = parsed
+        elif key in ("hash", "h"):
+            negate = False
+            if value.startswith("!"):
+                negate = True
+                value = value[1:]
+            updates["hash"] = {"type": "hash", "value": value, "enabled": True, "negate": negate}
+        elif key in ("status", "s"):
+            negate = False
+            if value.startswith("!"):
+                negate = True
+                value = value[1:]
+            statuses = [s.strip().lower() for s in value.split(",") if s.strip()]
+            updates["status"] = {"type": "status", "values": statuses, "enabled": True, "negate": negate}
     updated.extend(updates.values())
     return updated
 
@@ -1535,6 +1577,12 @@ def summarize_filters(filters: list[dict]) -> str:
             if prefix and raw and not raw.startswith("!"):
                 raw = prefix + raw
             parts.append(f"tag={raw}")
+        elif flt["type"] == "hash":
+            prefix = "!" if flt.get("negate") else ""
+            parts.append(f"hash={prefix}{flt['value']}")
+        elif flt["type"] == "status":
+            prefix = "!" if flt.get("negate") else ""
+            parts.append(f"status={prefix}{','.join(flt['values'])}")
     return " ".join(parts)
 
 
@@ -1559,6 +1607,12 @@ def format_filters_line(filters: list[dict], colors: ColorScheme) -> str:
             if flt.get("negate") and raw and not raw.startswith("!"):
                 raw = "!" + raw
             parts.append(f"tag={color}{raw}{reset}")
+        elif flt["type"] == "hash":
+            prefix = "!" if flt.get("negate") else ""
+            parts.append(f"hash={color}{prefix}{flt['value']}{reset}")
+        elif flt["type"] == "status":
+            prefix = "!" if flt.get("negate") else ""
+            parts.append(f"status={color}{prefix}{','.join(flt['values'])}{reset}")
     return "Filters: " + " ".join(parts)
 
 
@@ -1621,6 +1675,10 @@ def serialize_filters(filters: list[dict]) -> list[dict]:
                 "enabled": flt.get("enabled", True),
                 "negate": flt.get("negate", False),
             })
+        elif flt["type"] == "hash":
+            out.append({"type": "hash", "value": flt["value"], "enabled": flt.get("enabled", True), "negate": flt.get("negate", False)})
+        elif flt["type"] == "status":
+            out.append({"type": "status", "values": flt["values"], "enabled": flt.get("enabled", True), "negate": flt.get("negate", False)})
     return out
 
 
@@ -1644,6 +1702,10 @@ def restore_filters(items: list[dict]) -> list[dict]:
                     "negate": item.get("negate", False),
                 })
                 filters.append(parsed)
+        elif ftype == "hash" and item.get("value"):
+            filters.append({"type": "hash", "value": item["value"], "enabled": item.get("enabled", True), "negate": item.get("negate", False)})
+        elif ftype == "status" and item.get("values"):
+            filters.append({"type": "status", "values": item["values"], "enabled": item.get("enabled", True), "negate": item.get("negate", False)})
     return filters
 
 
@@ -1686,6 +1748,35 @@ def apply_filters(rows: list[dict], filters: list[dict]) -> list[dict]:
                     present = bool(tags & tag_set)
                 return not present if flt.get("negate") else present
             filtered = [r for r in filtered if match(r)]
+        elif flt["type"] == "hash":
+            hash_fragment = flt["value"].lower()
+            def match_hash(r):
+                full_hash = (r.get("hash") or "").lower()
+                present = hash_fragment in full_hash
+                return not present if flt.get("negate") else present
+            filtered = [r for r in filtered if match_hash(r)]
+        elif flt["type"] == "status":
+            target_states = set()
+            for status_term in flt["values"]:
+                if status_term == "all":
+                    # If "all" is specified, include all possible states
+                    target_states = set(STATE_CODE.keys())
+                    break
+                # Try to map status_term to one of the defined state groups or raw states
+                mapped_states = STATUS_FILTER_MAP.get(status_term)
+                if mapped_states:
+                    target_states.update(mapped_states)
+                elif status_term in STATE_CODE: # Allow filtering by raw STATE_CODE keys directly
+                    target_states.add(status_term)
+
+            def match_status(r):
+                raw_state = (r.get("raw", {}).get("state") or "").lower()
+                present = raw_state in target_states
+                return not present if flt.get("negate") else present
+            
+            # Only apply filter if there are valid target states
+            if target_states:
+                filtered = [r for r in filtered if match_status(r)]
     return filtered
 
 
@@ -2932,20 +3023,24 @@ def main() -> int:
                 if key == "?":
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
                     sys.stdout.write("\033[H\033[J")
-                    tui_print("Navigation: '(up) /(down) focus, , prev / . next page, Space select/clear, 0-9 select item")
-                    tui_print("Scope: a=all, w=downloading, u=uploading, v=paused, e=completed, g=error")
-                    tui_print("Sort: s=cycle field, o=toggle asc/desc")
-                    tui_print("Filters: f=text, c=category, #=tag, l=line, x=manage stack, p=presets")
-                    tui_print("Tabs: Tab=cycle tabs (off after last), Ctrl-Tab=cycle")
-                    tui_print("View: n=narrow mode, t=tags, d=added, h=hash width, m=inline mediainfo, X=clear mediainfo cache")
-                    tui_print("Reset: z=default view (page 1, newest first)")
-                    tui_print("Actions (selection required): P pause/resume, V verify, C category, E tags, T add trackers, Q qc, D delete, M macros")
-                    tui_print("~ clears selection (list) or exits tabs. Quit: Ctrl-Q")
-                    tui_print("\nPress any key to continue...", end="")
-                    tui_flush()  # Flush buffered help text before waiting
+                    tui_print(f"{colors.CYAN_BOLD}QBITUI HELP{colors.RESET}\n")
+                    tui_print(f"{colors.YELLOW}Navigation:{colors.RESET} ' / move cursor, , . page prev/next, Space select, Enter details")
+                    tui_print(f"{colors.YELLOW}Filters:{colors.RESET}    f status, c category, # tag, l line filter (text, hash, etc), x toggle filters")
+                    tui_print(f"{colors.YELLOW}Sort:{colors.RESET}       s cycle field, o toggle asc/desc")
+                    tui_print(f"{colors.YELLOW}View:{colors.RESET}       Tab next tab, Shift-Tab prev tab, z reset view")
+                    tui_print(f"{colors.YELLOW}Actions:{colors.RESET}    (Selection required) P pause/resume, D delete, C category, E tags, T trackers, Q qc, M macros")
+                    
+                    tui_print(f"\n{colors.CYAN_BOLD}STATUS MAPPING TABLE{colors.RESET}")
+                    tui_print(f"{'Code':<5} {'API Term':<20} {'Group/Description':<30}")
+                    tui_print("-" * 60)
+                    for m in STATUS_MAPPING:
+                        tui_print(f"{m['code']:<5} {m['api']:<20} {m['desc']:<30}")
+                    
+                    tui_print("\nPress any key to return...", end="")
+                    tui_flush()
                     tty.setraw(fd)
-                    read_input_queue() # Clear any pending
-                    select.select([sys.stdin], [], [], 10.0) # Wait for a key
+                    read_input_queue() 
+                    select.select([sys.stdin], [], [], 30.0)
                     read_input_queue()
                     have_full_draw = False
                     continue
@@ -3034,15 +3129,6 @@ def main() -> int:
                         selection_name = page_rows[idx].get("name")
                         active_tab = 0 # Reset tab focus for new selection
                     continue
-                if key == "f":
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                    val = read_line("Text filter: ").strip()
-                    if val:
-                        negate = False
-                        if val.startswith("!"): negate = True; val = val[1:]
-                        filters = [f for f in filters if f.get("type") != "text"]
-                        filters.append({"type": "text", "value": val, "enabled": True, "negate": negate})
-                    tty.setraw(fd); have_full_draw = False; continue
                 if key == "c":
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
                     val = read_line("Category filter (blank clears, '-' for none): ").strip()
@@ -3062,8 +3148,33 @@ def main() -> int:
                     tty.setraw(fd); have_full_draw = False; continue
                 if key == "l":
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                    val = read_line("Filter line (e.g. q=term cat=movies tag=tag1): ").strip()
+                    val = read_line("Filter line (e.g. q=term cat=movies tag=tag1 hash=abc status=downloading,paused): ").strip()
                     if val: filters = parse_filter_line(val, filters)
+                    tty.setraw(fd); have_full_draw = False; continue
+                if key == "f":
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    # This will be replaced by a multi-select prompt later
+                    all_status_terms = sorted(list(STATUS_FILTER_MAP.keys()) + [k for k in STATE_CODE.keys() if k not in STATUS_FILTER_MAP])
+                    current_status_filter_values = []
+                    for f in filters:
+                        if f["type"] == "status" and f.get("enabled", True):
+                            current_status_filter_values.extend(f["values"])
+                    
+                    # For now, a simple prompt. Will be replaced by multi-select TUI.
+                    tui_print("\nAvailable Statuses (comma-separated): " + ", ".join(all_status_terms))
+                    val = read_line(f"Filter by Status (e.g. downloading,paused). Current: {', '.join(current_status_filter_values) if current_status_filter_values else 'None'}: ").strip()
+                    
+                    filters = [f for f in filters if f.get("type") != "status"]
+                    if val:
+                        negate = False
+                        if val.startswith("!"):
+                            negate = True
+                            val = val[1:]
+                        statuses = [s.strip().lower() for s in val.split(",") if s.strip()]
+                        # Filter out any invalid status terms
+                        statuses = [s for s in statuses if s in all_status_terms or s in STATE_CODE]
+                        if statuses:
+                            filters.append({"type": "status", "values": statuses, "enabled": True, "negate": negate})
                     tty.setraw(fd); have_full_draw = False; continue
                 if key == "x":
                     if filters:
