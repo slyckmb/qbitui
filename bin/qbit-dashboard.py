@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.10.4"
+VERSION = "1.10.5"
 LAST_UPDATED = "2026-02-23"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -3039,27 +3039,27 @@ def main() -> int:
                         help_lines.append(f"{m['code']:<5} {m['api']:<20} {m['desc']:<30}")
 
                     scroll_offset = 0
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings) # Restore for printing
                     
                     while True:
                         rows_term, cols_term = shutil.get_terminal_size()
                         view_height = max(5, rows_term - 2)
                         
-                        # Clear screen and move to top
-                        sys.stdout.write("\033[H\033[J")
+                        # Use raw writes to bypass buffering
+                        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                        sys.stdout.write("\033[H\033[J") # Clear screen and move to top
                         
                         # Render visible slice
                         visible_lines = help_lines[scroll_offset : scroll_offset + view_height]
                         for line in visible_lines:
-                            tui_print(line)
+                            sys.stdout.write(line + "\r\n")
                         
-                        # Render footer
+                        # Render footer at fixed position
                         progress = int((scroll_offset / max(1, len(help_lines) - view_height)) * 100)
                         if len(help_lines) <= view_height: progress = 100
                         
-                        # Move to last row for footer
-                        tui_print(f"\033[{rows_term};1H{colors.FG_SECONDARY}[Help] Scroll: ' / (line), , . (page)  Exit: q Esc Enter  ({progress}%){colors.RESET}", end="")
-                        tui_flush()
+                        footer_text = f"{colors.FG_SECONDARY}[Help] Scroll: ' / (line), , . (page)  Exit: q Esc Enter  ({progress}%){colors.RESET}"
+                        sys.stdout.write(f"\033[{rows_term};1H{footer_text}")
+                        sys.stdout.flush()
                         
                         tty.setraw(fd)
                         keys_in = read_input_queue()
@@ -3082,7 +3082,6 @@ def main() -> int:
                                 scroll_offset = min(max(0, len(help_lines) - view_height), scroll_offset + (view_height // 2))
                         
                         if exit_help: break
-                        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings) # Restore for next iteration print
 
                     have_full_draw = False
                     continue
