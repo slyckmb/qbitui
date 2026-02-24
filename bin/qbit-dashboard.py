@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.10.5"
+VERSION = "1.10.6"
 LAST_UPDATED = "2026-02-23"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -296,6 +296,10 @@ def read_input_queue() -> list[str]:
                 pass
             elif seq in ("[Z", "[1;2Z", "[1;2I"):
                 keys.append("SHIFT_TAB")
+            elif seq in ("[A", "OA"):
+                keys.append("'")
+            elif seq in ("[B", "OB"):
+                keys.append("/")
             elif seq.startswith("[1;5") or seq.startswith("[1;6"):
                 if seq.endswith("I") or seq.endswith("Z"):
                     keys.append("CTRL_TAB")
@@ -3025,7 +3029,7 @@ def main() -> int:
                     help_lines = []
                     help_lines.append(f"{colors.CYAN_BOLD}QBITUI HELP{colors.RESET}")
                     help_lines.append("")
-                    help_lines.append(f"{colors.YELLOW}Navigation:{colors.RESET} ' / move cursor, , . page prev/next, Space select, Enter details")
+                    help_lines.append(f"{colors.YELLOW}Navigation:{colors.RESET} ↑/↓ (or ' /) move cursor, , . page prev/next, Space select, Enter details")
                     help_lines.append(f"{colors.YELLOW}Filters:{colors.RESET}    f status, c category, # tag, l line filter (text, hash, etc), x toggle filters")
                     help_lines.append(f"{colors.YELLOW}Scope:{colors.RESET}      a all, w down, u up, v paused, e completed, g error")
                     help_lines.append(f"{colors.YELLOW}Sort:{colors.RESET}       s cycle field, o toggle asc/desc")
@@ -3039,29 +3043,27 @@ def main() -> int:
                         help_lines.append(f"{m['code']:<5} {m['api']:<20} {m['desc']:<30}")
 
                     scroll_offset = 0
+                    tty.setraw(fd) # Enable raw mode once
                     
                     while True:
                         rows_term, cols_term = shutil.get_terminal_size()
                         view_height = max(5, rows_term - 2)
                         
-                        # Use raw writes to bypass buffering
-                        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                        sys.stdout.write("\033[H\033[J") # Clear screen and move to top
+                        sys.stdout.write("\033[H\033[2J") # Clear screen and move to top
                         
                         # Render visible slice
                         visible_lines = help_lines[scroll_offset : scroll_offset + view_height]
                         for line in visible_lines:
                             sys.stdout.write(line + "\r\n")
                         
-                        # Render footer at fixed position
+                        # Render footer
                         progress = int((scroll_offset / max(1, len(help_lines) - view_height)) * 100)
                         if len(help_lines) <= view_height: progress = 100
                         
-                        footer_text = f"{colors.FG_SECONDARY}[Help] Scroll: ' / (line), , . (page)  Exit: q Esc Enter  ({progress}%){colors.RESET}"
+                        footer_text = f"{colors.FG_SECONDARY}[Help] Scroll: ↑/↓ (or ' /), , . (page)  Exit: q Esc Enter  ({progress}%){colors.RESET}"
                         sys.stdout.write(f"\033[{rows_term};1H{footer_text}")
                         sys.stdout.flush()
                         
-                        tty.setraw(fd)
                         keys_in = read_input_queue()
                         if not keys_in:
                             select.select([sys.stdin], [], [], 0.2)
