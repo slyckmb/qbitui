@@ -1,4 +1,5 @@
-*.code-workspace
-
-# Agent baseline (runtime, not tracked)
-.agent/
+j
+AGENTS.override.md
+CLAUDE.md
+GEMINI.md
+.clinerules/99-session.md
