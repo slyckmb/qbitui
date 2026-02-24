@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.10.8"
+VERSION = "1.10.9"
 LAST_UPDATED = "2026-02-23"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -2160,6 +2160,7 @@ def capture_key_sequences() -> None:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 def main() -> int:
+    global NEED_RESIZE
     parser = argparse.ArgumentParser(description="Interactive qBittorrent dashboard")
     parser.add_argument("--config", default=os.environ.get("QBITTORRENT_CONFIG_FILE"), help="Path to request-cache.yml")
     parser.add_argument("--page-size", type=int, default=int(os.environ.get("QBITTORRENT_PAGE_SIZE", "10")))
@@ -2817,7 +2818,6 @@ def main() -> int:
             if update_mediainfo_cache(rows_to_render, page_rows):
                 data_changed = True # Trigger redraw to show new MI data
 
-            global NEED_RESIZE
             if NEED_RESIZE:
                 term_w = current_term_w
                 have_full_draw = False
@@ -3047,7 +3047,6 @@ def main() -> int:
                     need_redraw_help = True
                     
                     while True:
-                        global NEED_RESIZE
                         if NEED_RESIZE:
                             need_redraw_help = True
                             NEED_RESIZE = False
