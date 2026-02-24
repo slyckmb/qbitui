@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.10.3"
+VERSION = "1.10.4"
 LAST_UPDATED = "2026-02-23"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -3021,27 +3021,69 @@ def main() -> int:
                         set_banner("MediaInfo cache cleared.")
                     continue
                 if key == "?":
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                    sys.stdout.write("\033[H\033[J")
-                    tui_print(f"{colors.CYAN_BOLD}QBITUI HELP{colors.RESET}\n")
-                    tui_print(f"{colors.YELLOW}Navigation:{colors.RESET} ' / move cursor, , . page prev/next, Space select, Enter details")
-                    tui_print(f"{colors.YELLOW}Filters:{colors.RESET}    f status, c category, # tag, l line filter (text, hash, etc), x toggle filters")
-                    tui_print(f"{colors.YELLOW}Sort:{colors.RESET}       s cycle field, o toggle asc/desc")
-                    tui_print(f"{colors.YELLOW}View:{colors.RESET}       Tab next tab, Shift-Tab prev tab, z reset view")
-                    tui_print(f"{colors.YELLOW}Actions:{colors.RESET}    (Selection required) P pause/resume, D delete, C category, E tags, T trackers, Q qc, M macros")
+                    # Prepare help content
+                    help_lines = []
+                    help_lines.append(f"{colors.CYAN_BOLD}QBITUI HELP{colors.RESET}")
+                    help_lines.append("")
+                    help_lines.append(f"{colors.YELLOW}Navigation:{colors.RESET} ' / move cursor, , . page prev/next, Space select, Enter details")
+                    help_lines.append(f"{colors.YELLOW}Filters:{colors.RESET}    f status, c category, # tag, l line filter (text, hash, etc), x toggle filters")
+                    help_lines.append(f"{colors.YELLOW}Scope:{colors.RESET}      a all, w down, u up, v paused, e completed, g error")
+                    help_lines.append(f"{colors.YELLOW}Sort:{colors.RESET}       s cycle field, o toggle asc/desc")
+                    help_lines.append(f"{colors.YELLOW}View:{colors.RESET}       Tab/Shift-Tab cycle tabs, z reset, t tags, d date, h hash, n narrow, m media, X clear cache")
+                    help_lines.append(f"{colors.YELLOW}Actions:{colors.RESET}    (Selection required) P pause/resume, D delete, C category, E tags, T trackers, Q qc, M macros")
                     
-                    tui_print(f"\n{colors.CYAN_BOLD}STATUS MAPPING TABLE{colors.RESET}")
-                    tui_print(f"{'Code':<5} {'API Term':<20} {'Group/Description':<30}")
-                    tui_print("-" * 60)
+                    help_lines.append(f"\n{colors.CYAN_BOLD}STATUS MAPPING TABLE{colors.RESET}")
+                    help_lines.append(f"{'Code':<5} {'API Term':<20} {'Group/Description':<30}")
+                    help_lines.append("-" * 60)
                     for m in STATUS_MAPPING:
-                        tui_print(f"{m['code']:<5} {m['api']:<20} {m['desc']:<30}")
+                        help_lines.append(f"{m['code']:<5} {m['api']:<20} {m['desc']:<30}")
+
+                    scroll_offset = 0
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings) # Restore for printing
                     
-                    tui_print("\nPress any key to return...", end="")
-                    tui_flush()
-                    tty.setraw(fd)
-                    read_input_queue() 
-                    select.select([sys.stdin], [], [], 30.0)
-                    read_input_queue()
+                    while True:
+                        rows_term, cols_term = shutil.get_terminal_size()
+                        view_height = max(5, rows_term - 2)
+                        
+                        # Clear screen and move to top
+                        sys.stdout.write("\033[H\033[J")
+                        
+                        # Render visible slice
+                        visible_lines = help_lines[scroll_offset : scroll_offset + view_height]
+                        for line in visible_lines:
+                            tui_print(line)
+                        
+                        # Render footer
+                        progress = int((scroll_offset / max(1, len(help_lines) - view_height)) * 100)
+                        if len(help_lines) <= view_height: progress = 100
+                        
+                        # Move to last row for footer
+                        tui_print(f"\033[{rows_term};1H{colors.FG_SECONDARY}[Help] Scroll: ' / (line), , . (page)  Exit: q Esc Enter  ({progress}%){colors.RESET}", end="")
+                        tui_flush()
+                        
+                        tty.setraw(fd)
+                        keys_in = read_input_queue()
+                        if not keys_in:
+                            select.select([sys.stdin], [], [], 0.2)
+                            continue
+                        
+                        exit_help = False
+                        for k in keys_in:
+                            if k in ("q", "Q", "\x1b", "\r", "\n", " "): 
+                                exit_help = True
+                                break
+                            if k == "'": 
+                                scroll_offset = max(0, scroll_offset - 1)
+                            elif k == "/": 
+                                scroll_offset = min(max(0, len(help_lines) - view_height), scroll_offset + 1)
+                            elif k == ",": 
+                                scroll_offset = max(0, scroll_offset - (view_height // 2))
+                            elif k == ".": 
+                                scroll_offset = min(max(0, len(help_lines) - view_height), scroll_offset + (view_height // 2))
+                        
+                        if exit_help: break
+                        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings) # Restore for next iteration print
+
                     have_full_draw = False
                     continue
                 if key == "`":
