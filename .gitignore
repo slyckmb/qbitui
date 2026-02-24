@@ -3,3 +3,4 @@ AGENTS.override.md
 CLAUDE.md
 GEMINI.md
 .clinerules/99-session.md
+cache/
