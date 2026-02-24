@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.10.11"
+VERSION = "1.10.12"
 LAST_UPDATED = "2026-02-23"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -224,6 +224,9 @@ STATE_PAUSED = {item["api"] for item in STATUS_MAPPING if item["group"] == "paus
 STATE_ERROR = {item["api"] for item in STATUS_MAPPING if item["group"] == "error"}
 STATE_CHECKING = {item["api"] for item in STATUS_MAPPING if item["group"] == "checking"}
 STATE_COMPLETED = {item["api"] for item in STATUS_MAPPING if item["group"] == "completed"}
+
+# Build lookup maps
+API_TERM_MAP = {item["api"].lower(): item["api"] for item in STATUS_MAPPING}
 
 # Build filter map
 STATUS_FILTER_MAP = {
@@ -1770,8 +1773,8 @@ def apply_filters(rows: list[dict], filters: list[dict]) -> list[dict]:
                 mapped_states = STATUS_FILTER_MAP.get(status_term)
                 if mapped_states:
                     target_states.update(mapped_states)
-                elif status_term in STATE_CODE: # Allow filtering by raw API states directly
-                    target_states.add(status_term)
+                elif status_term in API_TERM_MAP: # Allow filtering by raw API states directly (case-insensitive)
+                    target_states.add(API_TERM_MAP[status_term])
                 else:
                     # Check if it's a QBT code (e.g. 'D', 'SD')
                     for m in STATUS_MAPPING:
@@ -3223,15 +3226,17 @@ def main() -> int:
                 if key == "f":
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
                     # This will be replaced by a multi-select prompt later
-                    all_status_terms = sorted(list(STATUS_FILTER_MAP.keys()) + [k for k in STATE_CODE.keys() if k not in STATUS_FILTER_MAP])
+                    all_status_groups = sorted(STATUS_FILTER_MAP.keys())
+                    all_api_terms = sorted(API_TERM_MAP.keys())
+                    all_status_codes = sorted(list(set(m["code"].lower() for m in STATUS_MAPPING)))
+                    
                     current_status_filter_values = []
                     for f in filters:
                         if f["type"] == "status" and f.get("enabled", True):
                             current_status_filter_values.extend(f["values"])
                     
                     # For now, a simple prompt. Will be replaced by multi-select TUI.
-                    all_status_codes = sorted(list(set(m["code"].lower() for m in STATUS_MAPPING)))
-                    tui_print("\nAvailable Status Groups: " + ", ".join(sorted(STATUS_FILTER_MAP.keys())))
+                    tui_print("\nAvailable Status Groups: " + ", ".join(all_status_groups))
                     tui_print("Available Status Codes: " + ", ".join(all_status_codes))
                     val = read_line(f"Filter by Status (e.g. downloading,paused,SD). Current: {', '.join(current_status_filter_values) if current_status_filter_values else 'None'}: ").strip()
                     
@@ -3243,7 +3248,7 @@ def main() -> int:
                             val = val[1:]
                         statuses = [s.strip().lower() for s in val.split(",") if s.strip()]
                         # Filter out any invalid status terms (groups, api terms, or codes)
-                        valid_terms = set(all_status_terms) | set(all_status_codes)
+                        valid_terms = set(all_status_groups) | set(all_api_terms) | set(all_status_codes)
                         statuses = [s for s in statuses if s in valid_terms]
                         if statuses:
                             filters.append({"type": "status", "values": statuses, "enabled": True, "negate": negate})
