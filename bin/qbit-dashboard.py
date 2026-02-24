@@ -3051,7 +3051,7 @@ def main() -> int:
                             need_redraw_help = True
                             NEED_RESIZE = False
 
-                        rows_term, cols_term = shutil.get_terminal_size()
+                        cols_term, rows_term = shutil.get_terminal_size()
                         view_height = max(5, rows_term - 2)
                         
                         if need_redraw_help:
@@ -3087,11 +3087,11 @@ def main() -> int:
                             if k in ("q", "Q", "\x1b", "\r", "\n", " "): 
                                 exit_help = True
                                 break
-                            if k == "'": 
+                            if k in ("'", "k"): 
                                 if scroll_offset > 0:
                                     scroll_offset -= 1
                                     need_redraw_help = True
-                            elif k == "/": 
+                            elif k in ("/", "j"): 
                                 if scroll_offset < len(help_lines) - view_height:
                                     scroll_offset += 1
                                     need_redraw_help = True
