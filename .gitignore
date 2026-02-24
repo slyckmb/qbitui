@@ -1,1 +1,4 @@
 *.code-workspace
+
+# Agent baseline (runtime, not tracked)
+.agent/
