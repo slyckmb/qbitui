@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.10.10"
+VERSION = "1.10.11"
 LAST_UPDATED = "2026-02-23"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -1770,8 +1770,13 @@ def apply_filters(rows: list[dict], filters: list[dict]) -> list[dict]:
                 mapped_states = STATUS_FILTER_MAP.get(status_term)
                 if mapped_states:
                     target_states.update(mapped_states)
-                elif status_term in STATE_CODE: # Allow filtering by raw STATE_CODE keys directly
+                elif status_term in STATE_CODE: # Allow filtering by raw API states directly
                     target_states.add(status_term)
+                else:
+                    # Check if it's a QBT code (e.g. 'D', 'SD')
+                    for m in STATUS_MAPPING:
+                        if m["code"].lower() == status_term:
+                            target_states.add(m["api"])
 
             def match_status(r):
                 raw_state = (r.get("raw", {}).get("state") or "").lower()
@@ -3225,8 +3230,10 @@ def main() -> int:
                             current_status_filter_values.extend(f["values"])
                     
                     # For now, a simple prompt. Will be replaced by multi-select TUI.
-                    tui_print("\nAvailable Statuses (comma-separated): " + ", ".join(all_status_terms))
-                    val = read_line(f"Filter by Status (e.g. downloading,paused). Current: {', '.join(current_status_filter_values) if current_status_filter_values else 'None'}: ").strip()
+                    all_status_codes = sorted(list(set(m["code"].lower() for m in STATUS_MAPPING)))
+                    tui_print("\nAvailable Status Groups: " + ", ".join(sorted(STATUS_FILTER_MAP.keys())))
+                    tui_print("Available Status Codes: " + ", ".join(all_status_codes))
+                    val = read_line(f"Filter by Status (e.g. downloading,paused,SD). Current: {', '.join(current_status_filter_values) if current_status_filter_values else 'None'}: ").strip()
                     
                     filters = [f for f in filters if f.get("type") != "status"]
                     if val:
@@ -3235,8 +3242,9 @@ def main() -> int:
                             negate = True
                             val = val[1:]
                         statuses = [s.strip().lower() for s in val.split(",") if s.strip()]
-                        # Filter out any invalid status terms
-                        statuses = [s for s in statuses if s in all_status_terms or s in STATE_CODE]
+                        # Filter out any invalid status terms (groups, api terms, or codes)
+                        valid_terms = set(all_status_terms) | set(all_status_codes)
+                        statuses = [s for s in statuses if s in valid_terms]
                         if statuses:
                             filters.append({"type": "status", "values": statuses, "enabled": True, "negate": negate})
                     tty.setraw(fd); have_full_draw = False; continue
