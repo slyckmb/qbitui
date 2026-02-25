@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.10.13"
+VERSION = "1.10.14"
 LAST_UPDATED = "2026-02-23"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -1769,19 +1769,19 @@ def apply_filters(rows: list[dict], filters: list[dict]) -> list[dict]:
             for status_term in flt["values"]:
                 if status_term == "all":
                     # If "all" is specified, include all possible states
-                    target_states = set(STATE_CODE.keys())
+                    target_states = {k.lower() for k in STATE_CODE.keys()}
                     break
                 # Try to map status_term to one of the defined state groups or raw states
                 mapped_states = STATUS_FILTER_MAP.get(status_term)
                 if mapped_states:
-                    target_states.update(mapped_states)
+                    target_states.update({s.lower() for s in mapped_states})
                 elif status_term in API_TERM_MAP: # Allow filtering by raw API states directly (case-insensitive)
-                    target_states.add(API_TERM_MAP[status_term])
+                    target_states.add(status_term) # API_TERM_MAP keys are already lowered
                 else:
                     # Check if it's a QBT code (e.g. 'D', 'SD')
                     for m in STATUS_MAPPING:
                         if m["code"].lower() == status_term:
-                            target_states.add(m["api"])
+                            target_states.add(m["api"].lower())
 
             def match_status(r):
                 raw_state = (r.get("raw", {}).get("state") or "").lower()
