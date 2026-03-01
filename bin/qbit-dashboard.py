@@ -34,8 +34,8 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.10.14"
-LAST_UPDATED = "2026-02-23"
+VERSION = "1.11.3"
+LAST_UPDATED = "2026-03-01"
 FULL_TUI_MIN_WIDTH = 120
 
 # ============================================================================
@@ -1975,29 +1975,116 @@ def render_trackers_lines(trackers: list[dict], width: int, max_rows: int) -> li
     return lines
 
 
-def render_files_lines(files: list[dict], width: int, max_rows: int) -> list[str]:
+def resolve_torrent_file_paths(content_path: str, file_name: str) -> list[Path]:
+    if not content_path or not file_name:
+        return []
+    root_path = Path(content_path)
+    relative_path = Path(file_name)
+    candidates: list[Path] = []
+
+    def add_candidate(path: Path) -> None:
+        if path not in candidates:
+            candidates.append(path)
+
+    if relative_path.is_absolute():
+        add_candidate(relative_path)
+        return candidates
+
+    if root_path.is_file():
+        add_candidate(root_path)
+        add_candidate(root_path.parent / relative_path)
+        return candidates
+
+    add_candidate(root_path / relative_path)
+    add_candidate(root_path.parent / relative_path)
+
+    if relative_path.parts and relative_path.parts[0] == root_path.name and len(relative_path.parts) > 1:
+        add_candidate(root_path / Path(*relative_path.parts[1:]))
+
+    return candidates
+
+
+def file_inode_and_links(content_path: str, file_name: str) -> tuple[str, str]:
+    candidate_paths = resolve_torrent_file_paths(content_path, file_name)
+    for file_path in candidate_paths:
+        for path_variant in (file_path, Path(f"{file_path}.!qB")):
+            try:
+                file_stat = path_variant.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return "?", "?"
+            return str(file_stat.st_ino), str(file_stat.st_nlink)
+    return "-", "-"
+
+
+def render_files_lines(files: list[dict], width: int, max_rows: int, content_path: str = "") -> list[str]:
     if not files:
         return ["No files found."]
     files.sort(key=lambda x: x.get("name", ""))
-    headers = ["Index", "Name", "Size", "Prog", "Priority"]
-    widths = [5, max(20, width - 32), 10, 6, 10]
+    headers = ["Index", "Inode", "Links", "Name", "Size", "Prog", "Priority"]
+    col_sep = "  "
+    index_width = 5
+    inode_width = 12
+    links_width = 5
+    size_width = 10
+    progress_width = 6
+    priority_width = 10
+    name_width = max(
+        8,
+        width - (
+            index_width
+            + inode_width
+            + links_width
+            + size_width
+            + progress_width
+            + priority_width
+            + (len(headers) - 1) * len(col_sep)
+        ),
+    )
+    widths = [index_width, inode_width, links_width, name_width, size_width, progress_width, priority_width]
+    row_align = {
+        0: "right",
+        1: "right",
+        2: "right",
+        3: "left",
+        4: "right",
+        5: "right",
+        6: "left",
+    }
+    header_align = {
+        0: "center",
+        1: "center",
+        2: "center",
+        3: "left",
+        4: "center",
+        5: "center",
+        6: "left",
+    }
+
+    def fmt_cell(col_idx: int, value: str, align_map: dict[int, str]) -> str:
+        text = truncate(str(value), widths[col_idx])
+        mode = align_map.get(col_idx, "left")
+        if mode == "right":
+            return text.rjust(widths[col_idx])
+        if mode == "center":
+            return text.center(widths[col_idx])
+        return text.ljust(widths[col_idx])
+
     lines = []
-    header_line = "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers))
+    header_line = col_sep.join(fmt_cell(i, h, header_align) for i, h in enumerate(headers))
     lines.append(header_line)
     lines.append("-" * min(width, len(header_line)))
     priority_map = {0: "Do not DL", 1: "Normal", 2: "High", 6: "Max", 7: "Forced"}
     for idx, f in enumerate(files[:max_rows]):
-        name = truncate(f.get("name", ""), widths[1])
+        file_name = str(f.get("name", ""))
+        name = truncate(file_name, widths[3])
         size = size_str(f.get("size", 0))
         prog = f"{int(f.get('progress', 0) * 100)}%"
         prio = priority_map.get(f.get("priority", 1), str(f.get("priority")))
-        line = (
-            f"{str(idx):<5} "
-            f"{name:<{widths[1]}} "
-            f"{size:<10} "
-            f"{prog:<6} "
-            f"{prio:<10}"
-        )
+        inode, links = file_inode_and_links(content_path, file_name)
+        row_values = [str(idx), inode, links, name, size, prog, truncate(prio, widths[6])]
+        line = col_sep.join(fmt_cell(i, row_values[i], row_align) for i in range(len(widths)))
         lines.append(line)
     if len(files) > max_rows:
         lines.append(f"... ({len(files) - max_rows} more)")
@@ -2912,7 +2999,12 @@ def main() -> int:
                             content_lines = render_trackers_lines(trackers, tab_width, max_rows)
                         elif active_label == "Content":
                             files = fetch_files(opener, api_url, selection_hash)
-                            content_lines = render_files_lines(files, tab_width, max_rows)
+                            content_lines = render_files_lines(
+                                files,
+                                tab_width,
+                                max_rows,
+                                get_content_path(selected_row.get("raw") or {}),
+                            )
                         elif active_label == "Peers":
                             peers_payload = fetch_peers(opener, api_url, selection_hash)
                             content_lines = render_peers_lines(peers_payload, tab_width, max_rows)
