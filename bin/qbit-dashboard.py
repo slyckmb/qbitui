@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.12.2"
+VERSION = "1.12.3"
 LAST_UPDATED = "2026-03-02"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -708,11 +708,21 @@ def eta_str(value: int | None) -> str:
 
 
 def truncate(value: str, max_len: int) -> str:
-    if len(value) <= max_len:
+    if visible_len(value) <= max_len:
         return value
     if max_len <= 1:
         return "~"
-    return value[: max_len - 1] + "~"
+    # Walk raw string counting only visible (non-ANSI) chars to find cut point
+    visible = 0
+    raw_pos = 0
+    while raw_pos < len(value) and visible < max_len - 1:
+        m = ANSI_RE.match(value, raw_pos)
+        if m:
+            raw_pos = m.end()
+            continue
+        visible += 1
+        raw_pos += 1
+    return value[:raw_pos] + "\x1b[0m~"
 
 
 CACHE_DIR = Path(os.environ.get("QBIT_MEDIAINFO_CACHE_DIR", "") or (Path.home() / ".logs" / "media_qc" / "cache" / "mediainfo"))
@@ -1070,15 +1080,29 @@ def draw_footer_full_compact(
         f"{colors.PURPLE_BOLD}i{colors.RESET}{colors.FG_SECONDARY}=cache  "
         f"{colors.PURPLE_BOLD}q{colors.RESET}{colors.FG_SECONDARY}=quit{colors.RESET}"
     )
-    lines = ["-" * width, short(line1), short(line2)]
+    def _k2(key: str, label: str) -> str:
+        return f"{colors.FG_TERTIARY}{key}{colors.RESET}{colors.FG_TERTIARY}={label}{colors.RESET}"
+
+    keys_parts = [
+        f"{colors.FG_SECONDARY}Keys:{colors.RESET}",
+        _k2("a", "All"), _k2("w", "↓"), _k2("u", "↑"), _k2("v", "Pause"), _k2("e", "Done"), _k2("g", "Err"),
+        f" {colors.FG_SECONDARY}│{colors.RESET}",
+        _k2("s", "sort"), _k2("o", "dir"),
+        f" {colors.FG_SECONDARY}│{colors.RESET}",
+        _k2("f", "status"), _k2("c", "cat"), _k2("#", "tag"), _k2("l", "text"), _k2("x", "toggle"), _k2("p", "preset"),
+        f" {colors.FG_SECONDARY}│{colors.RESET}",
+        _k2("t", "tags"), _k2("d", "date"), _k2("h", "hash"), _k2("n", "narrow"), _k2("m", "media"), _k2("z", "reset"),
+    ]
+    line3 = " ".join(keys_parts)
+    lines = ["-" * width, short(line1), short(line2), short(line3)]
     if macros:
         items = [f"{idx}:{m.get('desc','')[:10]}" for idx, m in enumerate(macros[:9], start=1)]
-        line3 = (
+        line4 = (
             f"{colors.FG_SECONDARY}Macros:{colors.RESET} " +
             "  ".join(items) +
             f"  {colors.FG_TERTIARY}[M menu, Shift+# direct]{colors.RESET}"
         )
-        lines.append(short(line3))
+        lines.append(short(line4))
     return lines
 
 
