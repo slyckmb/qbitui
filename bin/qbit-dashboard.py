@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.11.3"
+VERSION = "1.12.0"
 LAST_UPDATED = "2026-03-01"
 FULL_TUI_MIN_WIDTH = 120
 
