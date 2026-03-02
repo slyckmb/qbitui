@@ -2264,7 +2264,7 @@ def main() -> int:
     parser.add_argument("--debug-keys", help="Write raw key sequences to a file (TTY only).")
     parser.add_argument("--color-theme", type=Path, metavar='PATH', help='Path to YAML color theme file (overrides default colors)')
     # Shared cache flags
-    parser.add_argument("--use-shared-cache", action="store_true", help="Use qbit-cache-agent for list polling instead of direct API calls.")
+    parser.add_argument("--use-shared-cache", action=argparse.BooleanOptionalAction, default=True, help="Use qbit-cache-agent for list polling instead of direct API calls (default: true).")
     parser.add_argument("--cache-max-age", type=float, default=15.0, help="Max cache age in seconds (default: 15).")
     parser.add_argument("--cache-wait-fresh", type=float, default=5.0, help="Seconds to wait for fresh cache snapshot (default: 5).")
     parser.add_argument("--cache-allow-stale", action=argparse.BooleanOptionalAction, default=True, help="Allow stale cache fallback (default: true).")
