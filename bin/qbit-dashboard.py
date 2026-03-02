@@ -2263,6 +2263,13 @@ def main() -> int:
     parser.add_argument("--page-size", type=int, default=int(os.environ.get("QBITTORRENT_PAGE_SIZE", "10")))
     parser.add_argument("--debug-keys", help="Write raw key sequences to a file (TTY only).")
     parser.add_argument("--color-theme", type=Path, metavar='PATH', help='Path to YAML color theme file (overrides default colors)')
+    # Shared cache flags
+    parser.add_argument("--use-shared-cache", action="store_true", help="Use qbit-cache-agent for list polling instead of direct API calls.")
+    parser.add_argument("--cache-max-age", type=float, default=15.0, help="Max cache age in seconds (default: 15).")
+    parser.add_argument("--cache-wait-fresh", type=float, default=5.0, help="Seconds to wait for fresh cache snapshot (default: 5).")
+    parser.add_argument("--cache-allow-stale", action=argparse.BooleanOptionalAction, default=True, help="Allow stale cache fallback (default: true).")
+    parser.add_argument("--cache-agent-cmd", type=Path, default=Path(__file__).with_name("qbit-cache-agent.py"), help="Path to qbit-cache-agent.py (default: bin/qbit-cache-agent.py alongside this script).")
+    parser.add_argument("--cache-status", action="store_true", help="Print cache/daemon status JSON and exit (requires --use-shared-cache).")
     args = parser.parse_args()
 
     # Initialize global color scheme
@@ -2280,6 +2287,19 @@ def main() -> int:
     if not username or not password:
         print("ERROR: QBITTORRENT credentials not found (set env or credentials file)", file=sys.stderr)
         return 1
+
+    # --cache-status: delegate to cache agent and exit (no curses required)
+    if args.cache_status:
+        if not args.use_shared_cache:
+            print("ERROR: --cache-status requires --use-shared-cache", file=sys.stderr)
+            return 1
+        cache_env = {**os.environ, "QBIT_URL": api_url, "QBIT_USER": username, "QBIT_PASS": password}
+        result = subprocess.run(
+            [sys.executable, str(args.cache_agent_cmd), "--status"],
+            env=cache_env,
+            capture_output=False,
+        )
+        return result.returncode
 
     opener = make_opener()
     if not qbit_login(opener, api_url, username, password):
@@ -2858,7 +2878,27 @@ def main() -> int:
                 have_full_draw = False
                 need_redraw = True
             if not cached_rows or (now - cache_time) >= fetch_interval:
-                raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/info")
+                if args.use_shared_cache:
+                    cache_env = {**os.environ, "QBIT_URL": api_url, "QBIT_USER": username, "QBIT_PASS": password}
+                    _agent_result = subprocess.run(
+                        [
+                            sys.executable, str(args.cache_agent_cmd),
+                            "--max-age", str(args.cache_max_age),
+                            "--wait-fresh", str(args.cache_wait_fresh),
+                            "--ensure-daemon",
+                            "--allow-stale" if args.cache_allow_stale else "--no-allow-stale",
+                        ],
+                        env=cache_env,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if _agent_result.returncode == 0 and _agent_result.stdout.strip():
+                        raw = _agent_result.stdout
+                    else:
+                        set_banner("Cache agent failed; falling back to direct API")
+                        raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/info")
+                else:
+                    raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/info")
                 if raw.startswith("Error:") or raw.startswith("HTTP "):
                     set_banner(f"Network error: {raw}")
                     cache_time = now
