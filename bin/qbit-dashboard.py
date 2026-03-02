@@ -715,7 +715,7 @@ def truncate(value: str, max_len: int) -> str:
     return value[: max_len - 1] + "~"
 
 
-CACHE_DIR = Path(__file__).parent.parent / "cache" / "mediainfo"
+CACHE_DIR = Path(os.environ.get("QBIT_MEDIAINFO_CACHE_DIR", "") or (Path.home() / ".logs" / "media_qc" / "cache" / "mediainfo"))
 MI_CACHE_MAX_ITEMS = 1000  # Limit queue to 1000 items to prevent memory leak
 MI_CACHE_MAX_AGE_SECONDS = 86400  # 24 hours
 
@@ -2270,10 +2270,16 @@ def main() -> int:
     parser.add_argument("--cache-allow-stale", action=argparse.BooleanOptionalAction, default=True, help="Allow stale cache fallback (default: true).")
     parser.add_argument("--cache-agent-cmd", type=Path, default=Path(__file__).with_name("qbit-cache-agent.py"), help="Path to qbit-cache-agent.py (default: bin/qbit-cache-agent.py alongside this script).")
     parser.add_argument("--cache-status", action="store_true", help="Print cache/daemon status JSON and exit (requires --use-shared-cache).")
+    parser.add_argument("--mediainfo-cache-dir", type=Path, default=None, help="Override mediainfo cache directory (default: ~/.logs/media_qc/cache/mediainfo, or QBIT_MEDIAINFO_CACHE_DIR env).")
     args = parser.parse_args()
 
     # Initialize global color scheme
     colors = ColorScheme(yaml_path=args.color_theme)
+
+    # Resolve mediainfo cache dir (CLI flag > env var > default)
+    global CACHE_DIR
+    if args.mediainfo_cache_dir:
+        CACHE_DIR = args.mediainfo_cache_dir.expanduser()
 
     config_path = Path(args.config) if args.config else (Path(__file__).parent.parent / "config" / "request-cache.yml")
     cfg_api_url, cfg_creds = read_qbit_config(config_path)
