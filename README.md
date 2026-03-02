@@ -67,6 +67,60 @@ cd qbitui
 ln -s "$PWD/bin/qbit-dashboard.py" ~/.local/bin/qbitui
 ```
 
+## Shared Cache Mode
+
+qbitui includes `bin/qbit-cache-agent.py` and `bin/qbit-cache-daemon.py`, a shared
+polling daemon that lets multiple scripts read qBittorrent torrent data without
+each making independent API calls.
+
+### How it works
+
+- `qbit-cache-daemon.py` logs into qB, polls `/api/v2/torrents/info` on a
+  lease-driven schedule, and writes a shared JSON snapshot to
+  `~/.cache/qbitui/qbit/` (or `~/.cache/hashall/qbit/` for legacy path).
+- `qbit-cache-agent.py` renews a lease, optionally starts the daemon, and
+  returns a fresh (or stale-fallback) snapshot from the cache file.
+- The dashboard calls the agent subprocess instead of hitting the API directly
+  when `--use-shared-cache` is enabled.
+
+### Example commands
+
+```bash
+# Enable shared cache mode (daemon auto-started if needed)
+./bin/qbit-dashboard.py --use-shared-cache
+
+# Tune freshness window
+./bin/qbit-dashboard.py --use-shared-cache --cache-max-age 10 --cache-wait-fresh 3
+
+# Disallow stale fallback (hard-fail if cache is too old)
+./bin/qbit-dashboard.py --use-shared-cache --no-cache-allow-stale
+
+# Point to a custom agent location
+./bin/qbit-dashboard.py --use-shared-cache --cache-agent-cmd /usr/local/bin/qbit-cache-agent.py
+```
+
+### Troubleshooting with --cache-status
+
+```bash
+./bin/qbit-dashboard.py --use-shared-cache --cache-status
+```
+
+Prints a JSON object with daemon PID, running state, cache age, active leases,
+and last fetch metadata. Useful for diagnosing stale cache or daemon startup issues.
+
+### Migration note
+
+Previously the cache scripts lived in the hashall repo:
+
+```
+hashall/bin/qbit-cache-agent.py   →  qbitui/bin/qbit-cache-agent.py  (canonical)
+hashall/bin/qbit-cache-daemon.py  →  qbitui/bin/qbit-cache-daemon.py (canonical)
+```
+
+The hashall copies are now thin wrappers that exec the qbitui canonical scripts.
+Existing hashall scripts (`qbit-start-seeding-gradual.sh`, etc.) continue working
+without any command-line changes.
+
 ## Status
 
 Actively used. Arrow key support intentionally removed (tmux ESC sequence conflicts). A non-blocking input loop and curses-style buffered screen are planned improvements.
