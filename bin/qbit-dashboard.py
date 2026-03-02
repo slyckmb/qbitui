@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.12.5"
+VERSION = "1.12.6"
 LAST_UPDATED = "2026-03-02"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -1061,6 +1061,7 @@ def draw_footer_full_compact(
     width: int,
     has_selection: bool = False,
     macros: list[dict] | None = None,
+    sep_width: int = 0,
 ) -> list[str]:
     def short(value: str) -> str:
         return truncate(value, width)
@@ -1113,8 +1114,8 @@ def draw_footer_full_compact(
     ]
     line3 = " ".join(keys_parts)
     _l1, _l2, _l3 = short(line1), short(line2), short(line3)
-    sep_width = max(visible_len(_l1), visible_len(_l2), visible_len(_l3))
-    lines = ["-" * sep_width, _l1, _l2, _l3]
+    _sw = sep_width if sep_width > 0 else max(visible_len(_l1), visible_len(_l2), visible_len(_l3))
+    lines = ["-" * _sw, _l1, _l2, _l3]
     if macros:
         items = [f"{idx}:{m.get('desc','')[:10]}" for idx, m in enumerate(macros[:9], start=1)]
         line4 = (
@@ -1408,7 +1409,7 @@ def draw_footer_v2(
             f"{colors.CYAN_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Next tab{colors.RESET}",
             f"{colors.CYAN_BOLD}Shift-Tab{colors.RESET}{colors.FG_SECONDARY}=Prev tab{colors.RESET}",
             f"{colors.YELLOW_BOLD}←/→{colors.RESET}{colors.FG_SECONDARY}=tab nav{colors.RESET}",
-            f"{colors.PURPLE_BOLD}q/ESC{colors.RESET}{colors.FG_SECONDARY}=exit{colors.RESET}",
+            f"{colors.PURPLE_BOLD}q{colors.RESET}{colors.FG_SECONDARY}=exit{colors.RESET}",
         ]
 
         cmd_line = truncate(
@@ -1427,7 +1428,7 @@ def draw_footer_v2(
             f"{colors.CYAN_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Next{colors.RESET}",
             f"{colors.CYAN_BOLD}Shift-Tab{colors.RESET}{colors.FG_SECONDARY}=Prev{colors.RESET}",
             f"{colors.YELLOW_BOLD}←/→{colors.RESET}{colors.FG_SECONDARY}=tab nav{colors.RESET}",
-            f"{colors.PURPLE_BOLD}q/ESC{colors.RESET}{colors.FG_SECONDARY}=exit{colors.RESET}",
+            f"{colors.PURPLE_BOLD}q{colors.RESET}{colors.FG_SECONDARY}=exit{colors.RESET}",
         ]
 
         cmd_line = truncate("  ".join(nav), width - 4)
@@ -1442,7 +1443,7 @@ def draw_footer_v2(
             f"{colors.CYAN_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Next tab{colors.RESET}",
             f"{colors.CYAN_BOLD}Shift-Tab{colors.RESET}{colors.FG_SECONDARY}=Prev tab{colors.RESET}",
             f"{colors.YELLOW_BOLD}←/→{colors.RESET}{colors.FG_SECONDARY}=tab nav{colors.RESET}",
-            f"{colors.PURPLE_BOLD}q/ESC{colors.RESET}{colors.FG_SECONDARY}=exit{colors.RESET}",
+            f"{colors.PURPLE_BOLD}q{colors.RESET}{colors.FG_SECONDARY}=exit{colors.RESET}",
         ]
         cmd_line = truncate("  ".join(nav), width - 4)
         _pad2 = max(0, width - visible_len(cmd_line) - 4)
@@ -1456,7 +1457,7 @@ def draw_footer_v2(
             f"{colors.CYAN_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Next tab{colors.RESET}",
             f"{colors.CYAN_BOLD}Shift-Tab{colors.RESET}{colors.FG_SECONDARY}=Prev tab{colors.RESET}",
             f"{colors.YELLOW_BOLD}←/→{colors.RESET}{colors.FG_SECONDARY}=tab nav{colors.RESET}",
-            f"{colors.PURPLE_BOLD}q/ESC{colors.RESET}{colors.FG_SECONDARY}=exit{colors.RESET}",
+            f"{colors.PURPLE_BOLD}q{colors.RESET}{colors.FG_SECONDARY}=exit{colors.RESET}",
         ]
         cmd_line = truncate("  ".join(nav), width - 4)
         _pad2 = max(0, width - visible_len(cmd_line) - 4)
@@ -2306,45 +2307,53 @@ def render_mediainfo_lines(item: dict, width: int, colors: ColorScheme) -> list[
     content_path = get_content_path(raw)
     info = get_mediainfo_for_hash(str(item.get("hash") or ""), content_path)
 
-    lines = []
     if not info:
         return [f"{colors.FG_TERTIARY}No MediaInfo.{colors.RESET}"]
 
-    # Parse mediainfo output and colorize
-    for line in str(info).splitlines():
-        line = line.strip()
-        if not line:
-            lines.append("")
-            continue
+    src_lines = [l.rstrip() for l in str(info).splitlines()]
+    lines: list[str] = []
 
-        # Check if it's a key: value line
-        if ":" in line:
-            parts = line.split(":", 1)
-            if len(parts) == 2:
-                key, value = parts
-                key = key.strip()
-                value = value.strip()
+    # Detect pre-formatted table output (mediainfo_table format):
+    # line 0 = column headers, line 1 = "---" separator
+    is_table = len(src_lines) >= 2 and src_lines[1].lstrip().startswith("-")
 
-                # Color label in lavender
-                colored_key = f"{colors.LAVENDER}{key}:{colors.RESET}"
-
-                # Color value based on type
-                if any(unit in value.lower() for unit in ["kb/s", "mb/s", "gb/s", "gb", "mb", "kb", "bits"]):
-                    colored_value = f"{colors.YELLOW}{value}{colors.RESET}"
-                elif value.replace(".", "").replace("-", "").isdigit():
-                    colored_value = f"{colors.YELLOW}{value}{colors.RESET}"
-                elif "/" in value or "\\" in value or ":" in value:
-                    colored_value = f"{colors.BLUE}{value}{colors.RESET}"
-                else:
-                    colored_value = f"{colors.FG_PRIMARY}{value}{colors.RESET}"
-
-                colored_line = f"{colored_key} {colored_value}"
-                lines.extend(wrap_ansi(colored_line, width))
+    if is_table:
+        # Table format: render header in lavender, separator dimmed, data rows plain.
+        # Do NOT split on ":" — that would corrupt duration values like "06:41:32.677".
+        for i, line in enumerate(src_lines):
+            if not line.strip():
+                lines.append("")
+            elif i == 0:
+                lines.extend(wrap_ansi(f"{colors.LAVENDER}{line}{colors.RESET}", width))
+            elif line.lstrip().startswith("-"):
+                lines.extend(wrap_ansi(f"{colors.FG_TERTIARY}{line}{colors.RESET}", width))
             else:
                 lines.extend(wrap_ansi(line, width))
-        else:
-            # Section headers or non-key-value lines
-            lines.extend(wrap_ansi(line, width))
+    else:
+        # Key:value format (fallback for non-table mediainfo output)
+        for line in src_lines:
+            line_s = line.strip()
+            if not line_s:
+                lines.append("")
+                continue
+            if ":" in line_s:
+                parts = line_s.split(":", 1)
+                if len(parts) == 2:
+                    key, value = parts[0].strip(), parts[1].strip()
+                    colored_key = f"{colors.LAVENDER}{key}:{colors.RESET}"
+                    if any(u in value.lower() for u in ["kb/s", "mb/s", "gb/s", "gb", "mb", "kb", "bits"]):
+                        colored_value = f"{colors.YELLOW}{value}{colors.RESET}"
+                    elif value.replace(".", "").replace("-", "").isdigit():
+                        colored_value = f"{colors.YELLOW}{value}{colors.RESET}"
+                    elif "/" in value or "\\" in value or ":" in value:
+                        colored_value = f"{colors.BLUE}{value}{colors.RESET}"
+                    else:
+                        colored_value = f"{colors.FG_PRIMARY}{value}{colors.RESET}"
+                    lines.extend(wrap_ansi(f"{colored_key} {colored_value}", width))
+                else:
+                    lines.extend(wrap_ansi(line_s, width))
+            else:
+                lines.extend(wrap_ansi(line_s, width))
 
     return lines or [f"{colors.FG_TERTIARY}No MediaInfo.{colors.RESET}"]
 
@@ -2745,6 +2754,11 @@ def main() -> int:
                 break
             if key in w:
                 shrink(key)
+
+        # Expand name column to fill remaining terminal width
+        spare = content_width_local - total_width()
+        if spare > 0:
+            w["name"] += spare
 
         headers = {
             "f": "F",
@@ -3371,6 +3385,7 @@ def main() -> int:
                         width=content_width,
                         has_selection=bool(selection_hash),
                         macros=macros_global,
+                        sep_width=table_render_width,
                     )
 
                 for line in footer_lines:
@@ -3398,8 +3413,8 @@ def main() -> int:
                 if in_tab_view and selection_hash:
                     active_label = tabs[active_tab]
 
-                    # q or ESC exits tab view
-                    if key in ("q", "\x1b"):
+                    # q exits tab view (bare ESC is discarded by read_input_queue)
+                    if key == "q":
                         in_tab_view = False
                         have_full_draw = False
                         continue
