@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.12.8"
+VERSION = "1.12.9"
 LAST_UPDATED = "2026-03-02"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -464,6 +464,19 @@ def qbit_request(opener: urllib.request.OpenerDirector, api_url: str, method: st
         return f"HTTP {exc.code}: {body}".strip()
     except Exception as exc:
         return f"Error: {exc}"
+
+
+def fetch_system_tags(opener: urllib.request.OpenerDirector, api_url: str) -> list[str]:
+    raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/tags")
+    try:
+        return sorted(json.loads(raw) or [])
+    except Exception:
+        return []
+
+
+def delete_system_tag(opener: urllib.request.OpenerDirector, api_url: str, tag: str) -> str:
+    resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/deleteTags", {"tags": tag})
+    return "OK" if resp in ("Ok.", "") else (resp or "error")
 
 
 def fetch_public_trackers(url: str) -> list[str]:
@@ -1639,7 +1652,12 @@ def build_rows(
             peers_raw = t.get("num_incomplete")
         _trk = resolve_tracker_from_tags(str(tags_value), tracker_keyword_map)
         if _trk == "-":
-            # Try tracker URL pattern matching from registry
+            # Level 2: category-based lookup (qbit_manage sets category = tracker key)
+            _cat = (t.get("category") or "").strip().lower()
+            if _cat:
+                _trk = tracker_keyword_map.get(_cat, "-")
+        if _trk == "-":
+            # Level 3: URL regex pattern matching from registry
             tracker_url = t.get("tracker") or ""
             if tracker_url and tracker_url_pattern_map:
                 for pattern, key in tracker_url_pattern_map.items():
@@ -1650,9 +1668,11 @@ def build_rows(
                     except re.error:
                         pass
         if _trk == "-":
+            # Level 4 (last resort): hostname extraction
             _trk = _short_tracker_name(t.get("tracker") or "")
         rows.append({
             "name": t.get("name", ""),
+            "save_path": Path(t.get("save_path") or "").name or "-",
             "state": t.get("state", ""),
             "st": STATE_CODE.get(t.get("state", ""), "?"),
             "progress": progress,
@@ -2132,23 +2152,39 @@ def apply_action(opener: urllib.request.OpenerDirector, api_url: str, action: st
         existing_tags = (item.get("tags") or "").strip()
         if existing_tags:
             print(f"Current tags: {existing_tags}")
-        value = read_line("Tags (comma-separated, '-' to remove, '--' to clear all, blank cancels): ").strip()
-        if not value:
+        else:
+            print("(no tags)")
+        choice = read_line("a=add  r=remove  d=delete-from-system  ESC=cancel: ").strip().lower()
+        if not choice or choice == "\x1b":
             return "Cancelled"
-        if value == "--":
-            existing = (item.get("tags") or "").strip()
-            if not existing:
-                return "No tags to clear"
-            resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/removeTags", {"hashes": hash_value, "tags": existing})
-            return "OK" if resp in ("Ok.", "") else resp
-        if value.startswith("-"):
-            tags = value[1:].strip()
-            if not tags:
+        if choice == "a":
+            value = read_line("Add tags (comma-separated): ").strip()
+            if not value:
                 return "Cancelled"
-            resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/removeTags", {"hashes": hash_value, "tags": tags})
+            resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/addTags",
+                                {"hashes": hash_value, "tags": value})
             return "OK" if resp in ("Ok.", "") else resp
-        resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/addTags", {"hashes": hash_value, "tags": value})
-        return "OK" if resp in ("Ok.", "") else resp
+        if choice == "r":
+            if existing_tags:
+                print(f"Tags: {existing_tags}")
+            value = read_line("Remove tag(s) (comma-separated): ").strip()
+            if not value:
+                return "Cancelled"
+            resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/removeTags",
+                                {"hashes": hash_value, "tags": value})
+            return "OK" if resp in ("Ok.", "") else resp
+        if choice == "d":
+            system_tags = fetch_system_tags(opener, api_url)
+            if system_tags:
+                print("System tags: " + ", ".join(system_tags))
+            tag = read_line("Delete tag from system: ").strip()
+            if not tag:
+                return "Cancelled"
+            confirm = read_line(f"Delete '{tag}' from ALL torrents and system? [y/N]: ").strip().lower()
+            if confirm != "y":
+                return "Cancelled"
+            return delete_system_tag(opener, api_url, tag)
+        return "Cancelled"
     if action == "V":
         resp = qbit_request(opener, api_url, "POST", "/api/v2/torrents/recheck", {"hashes": hash_value})
         return "OK" if resp in ("Ok.", "") else resp
@@ -2889,6 +2925,7 @@ def main() -> int:
             "no": max(2, len(str(max(0, len(page_rows_local) - 1)))),
             "st": 2,
             "name": 44,
+            "sp": 14,
             "trk": 8,
             "cat": 8,
             "pct": 3,
@@ -2904,6 +2941,7 @@ def main() -> int:
         }
         mins = {
             "name": 10,
+            "sp": 6,
             "trk": 3,
             "cat": 3,
             "hash": 12 if show_full_hash else 6,
@@ -2919,7 +2957,7 @@ def main() -> int:
             "no": 1,
         }
 
-        cols = ["f", "no", "st", "name", "trk", "cat", "pct", "sz", "up", "dl", "ul", "sd", "pr", "eta"]
+        cols = ["f", "no", "st", "name", "sp", "trk", "cat", "pct", "sz", "up", "dl", "ul", "sd", "pr", "eta"]
         if show_added:
             cols.append("add")
         cols.append("hash")
@@ -2935,7 +2973,7 @@ def main() -> int:
             w[key] -= dec
             overflow -= dec
 
-        for key in ("name", "trk", "cat", "hash", "add", "sz", "up", "dl", "ul", "sd", "pr", "eta", "pct", "no"):
+        for key in ("name", "sp", "trk", "cat", "hash", "add", "sz", "up", "dl", "ul", "sd", "pr", "eta", "pct", "no"):
             if overflow <= 0:
                 break
             if key in w:
@@ -2951,6 +2989,7 @@ def main() -> int:
             "no": "No",
             "st": "ST",
             "name": "Name",
+            "sp": "Sp",
             "trk": "Trk",
             "cat": "Cat",
             "pct": "%",
@@ -2989,6 +3028,7 @@ def main() -> int:
                 "no": str(idx),
                 "st": str(item.get("st") or "?"),
                 "name": str(item.get("name") or "-"),
+                "sp": str(item.get("save_path") or "-"),
                 "trk": str(item.get("tracker") or "-"),
                 "cat": str(item.get("category") or "-"),
                 "pct": pct_value,
@@ -3072,11 +3112,15 @@ def main() -> int:
         no_width = max(2, len(str(max(0, len(page_rows_local) - 1))))
         trk_width = min(12, 6 + max(0, content_width_local - 96) // 12)
         cat_width = min(16, 8 + max(0, content_width_local - 96) // 10)
+        sp_width = 6 if content_width_local >= 96 else 0
         added_width = 11
         pct_width = 4
-        reserved_width = 25 + no_width + trk_width + cat_width
+        reserved_width = 25 + no_width + trk_width + cat_width + (sp_width + 1 if sp_width else 0)
         name_width = max(1, content_width_local - reserved_width)
-        narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Name':<{name_width}} {'Trk':<{trk_width}} {'Cat':<{cat_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
+        if sp_width:
+            narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Name':<{name_width}} {'Sp':<{sp_width}} {'Trk':<{trk_width}} {'Cat':<{cat_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
+        else:
+            narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Name':<{name_width}} {'Trk':<{trk_width}} {'Cat':<{cat_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
         narrow_divider = "-" * content_width_local
 
         lines.append(truncate(narrow_header, content_width_local))
@@ -3087,6 +3131,7 @@ def main() -> int:
             focus_marker = ">" if idx == focus_idx else " "
             st = str(item.get("st") or "?")
             name = truncate(str(item.get("name") or "-"), name_width).ljust(name_width)
+            sp_val = truncate(str(item.get("save_path") or "-"), sp_width).ljust(sp_width) if sp_width else ""
             trk = truncate(str(item.get("tracker") or "-"), trk_width).ljust(trk_width)
             cat = truncate(str(item.get("category") or "-"), cat_width).ljust(cat_width)
             added_short = str(item.get("added_short") or "-")[:added_width].ljust(added_width)
@@ -3095,12 +3140,19 @@ def main() -> int:
 
             if selected:
                 name_p = ANSI_RE.sub("", name).ljust(name_width)
+                sp_p  = ANSI_RE.sub("", sp_val).ljust(sp_width) if sp_width else ""
                 trk_p  = ANSI_RE.sub("", trk).ljust(trk_width)
                 cat_p  = ANSI_RE.sub("", cat).ljust(cat_width)
-                row_plain = (
-                    f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {name_p} "
-                    f"{trk_p} {cat_p} {added_short} {pct}"
-                )
+                if sp_width:
+                    row_plain = (
+                        f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {name_p} "
+                        f"{sp_p} {trk_p} {cat_p} {added_short} {pct}"
+                    )
+                else:
+                    row_plain = (
+                        f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {name_p} "
+                        f"{trk_p} {cat_p} {added_short} {pct}"
+                    )
                 row_plain = row_plain[:content_width_local].ljust(content_width_local)
                 lines.append(f"{colors.SELECTION}{row_plain}{colors.RESET}")
             else:
@@ -3110,7 +3162,10 @@ def main() -> int:
                 focus_col = f"{colors.CYAN}{focus_marker}{colors.RESET}" if idx == focus_idx else " "
                 trk_colored = f"{colors.ORANGE}{trk}{colors.RESET}"
                 cat_colored = f"{colors.PURPLE}{cat}{colors.RESET}"
-                line = f"{focus_col} {idx:<{no_width}} {st_colored} {name_colored} {trk_colored} {cat_colored} {added_short} {pct}"
+                if sp_width:
+                    line = f"{focus_col} {idx:<{no_width}} {st_colored} {name_colored} {sp_val} {trk_colored} {cat_colored} {added_short} {pct}"
+                else:
+                    line = f"{focus_col} {idx:<{no_width}} {st_colored} {name_colored} {trk_colored} {cat_colored} {added_short} {pct}"
                 if visible_len(line) > content_width_local:
                     line = truncate(line, content_width_local)
                 else:
