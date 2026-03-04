@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.12.9"
+VERSION = "1.12.10"
 LAST_UPDATED = "2026-03-02"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -1672,7 +1672,7 @@ def build_rows(
             _trk = _short_tracker_name(t.get("tracker") or "")
         rows.append({
             "name": t.get("name", ""),
-            "save_path": Path(t.get("save_path") or "").name or "-",
+            "save_path": (t.get("save_path") or "").rstrip("/") or "-",
             "state": t.get("state", ""),
             "st": STATE_CODE.get(t.get("state", ""), "?"),
             "progress": progress,
