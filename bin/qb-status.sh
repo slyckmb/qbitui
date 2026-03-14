@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Version: 1.2.1
+# Version: 1.2.2
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.1"
+SCRIPT_VERSION="1.2.2"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QBIT_URL="${QBIT_URL:-http://localhost:9003}"
 QBIT_USER="${QBIT_USER:-admin}"
@@ -320,7 +320,10 @@ while true; do
       ([.[] | select((.progress // 0) <= 0.0)] | length),
       ([.[] | select((.progress // 0) > 0.0 and (.progress // 0) < 1.0)] | length),
       ([.[] | select((.state // "" | ascii_downcase) == "stoppedup")] | length),
-      ([.[] | select((.state // "" | ascii_downcase) == "stoppeddl")] | length),
+      ([.[] | select(
+        (.state // "" | ascii_downcase) == "stoppeddl"
+        or (.state // "" | ascii_downcase) == "pauseddl"
+      )] | length),
       ([.[] | select((.state // "" | ascii_downcase) == "stalledup")] | length),
       ([.[] | select((.state // "" | ascii_downcase) == "uploading")] | length),
       ([.[] | select((.state // "" | ascii_downcase) == "queuedup")] | length),
