@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Version: 1.2.2
+# Version: 1.2.3
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.2"
+SCRIPT_VERSION="1.2.3"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QBIT_URL="${QBIT_URL:-http://localhost:9003}"
 QBIT_USER="${QBIT_USER:-admin}"
@@ -15,7 +15,7 @@ ALLOW_FILE=""
 EVENTS_JSONL=""
 MAX_ITERATIONS=0
 DASHBOARD=0
-USE_CACHE=0
+USE_CACHE=1
 CACHE_MAX_AGE=15
 CACHE_AGENT="${QBIT_CACHE_AGENT:-$SCRIPT_DIR/qb-cache-agent.py}"
 CACHE_CLIENT_ID="$(basename "$0"):$$"
@@ -39,7 +39,8 @@ Options:
   --events-jsonl PATH     Write watchdog events as JSONL
   --max-iterations N      Exit after N polling iterations (default: 0 = infinite)
   --dashboard             Overwrite-in-place dashboard mode (like watch)
-  --cache                 Read qB torrents/info via shared cache agent
+  --cache                 Read qB torrents/info via shared cache agent (default)
+  --no-cache              Bypass shared cache and query qB API directly
   --cache-max-age N       Max cache age seconds when --cache is enabled (default: 15)
   -h, --help              Show help
 USAGE
@@ -85,6 +86,10 @@ while [[ $# -gt 0 ]]; do
     ;;
   --cache)
     USE_CACHE=1
+    shift
+    ;;
+  --no-cache)
+    USE_CACHE=0
     shift
     ;;
   --cache-max-age)
