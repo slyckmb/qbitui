@@ -254,8 +254,8 @@ def build_agent_parser() -> argparse.ArgumentParser:
         default=True,
     )
     parser.add_argument("--status", action="store_true")
-    parser.add_argument("--daemon-default-interval", type=float, default=10.0)
-    parser.add_argument("--daemon-min-interval", type=float, default=2.0)
+    parser.add_argument("--daemon-default-interval", type=float, default=30.0)
+    parser.add_argument("--daemon-min-interval", type=float, default=15.0)
     parser.add_argument("--daemon-max-interval", type=float, default=60.0)
     parser.add_argument("--daemon-idle-grace", type=float, default=120.0)
     return parser
@@ -487,11 +487,11 @@ def daemon_main(argv: Optional[List[str]] = None) -> int:
 
             if active_count > 0:
                 last_active_at = now
-                fastest_requested = min(
-                    _requested_interval_from_lease(lease, args.default_interval)
-                    for lease in active_leases
-                )
-                effective_interval_s = max(args.min_interval, min(args.max_interval, fastest_requested))
+                # Daemon controls its own refresh rate — client-requested intervals are
+                # recorded in leases (for observability) but do NOT drive the fetch
+                # schedule.  Using the fastest client as the clock caused runaway CPU
+                # when any client polled aggressively (e.g. watch -n 5 with 5 k torrents).
+                effective_interval_s = max(args.min_interval, min(args.max_interval, args.default_interval))
             else:
                 effective_interval_s = max(args.min_interval, min(args.max_interval, args.default_interval))
                 if (now - last_active_at) >= args.idle_grace:
