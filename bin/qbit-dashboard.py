@@ -36,7 +36,7 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 SCRIPT_NAME = "qbit-dashboard"
-VERSION = "1.15.0"
+VERSION = "1.16.0"
 LAST_UPDATED = "2026-03-16"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -325,6 +325,10 @@ def read_input_queue() -> list[str]:
                 keys.append(".")   # Right arrow → page next
             elif seq in ("[D", "OD"):
                 keys.append(",")   # Left arrow → page prev
+            elif seq in ("[5~"):
+                keys.append("PGUP")
+            elif seq in ("[6~"):
+                keys.append("PGDN")
             elif seq.startswith("[1;5") or seq.startswith("[1;6"):
                 if seq.endswith("I") or seq.endswith("Z"):
                     keys.append("CTRL_TAB")
@@ -1304,9 +1308,20 @@ def draw_footer_full_compact(
         _k3("n", "narrow", _vi), _k3("m", "media", _vi), _k3("z", "reset", _vi),
     ]
     line3 = " ".join(keys_parts)
-    _l1, _l2, _l3 = short(line1), short(line2), short(line3)
-    _sw = sep_width if sep_width > 0 else max(visible_len(_l1), visible_len(_l2), visible_len(_l3))
-    lines = ["-" * _sw, _l1, _l2, _l3]
+    _l1, _l2 = short(line1), short(line2)
+    if visible_len(line3) <= width:
+        _l3_lines = [short(line3)]
+    else:
+        # Split at │ group boundaries into multiple lines
+        _groups: list[list[str]] = [[]]
+        for part in keys_parts:
+            if "│" in part:
+                _groups.append([])
+            else:
+                _groups[-1].append(part)
+        _l3_lines = [short(" ".join(g)) for g in _groups if g]
+    _sw = sep_width if sep_width > 0 else max(visible_len(_l1), visible_len(_l2), max(visible_len(l) for l in _l3_lines))
+    lines = ["-" * _sw, _l1, _l2] + _l3_lines
     if macros:
         items = [f"{idx}:{m.get('desc','')[:10]}" for idx, m in enumerate(macros[:9], start=1)]
         line4 = (
@@ -1477,7 +1492,8 @@ def draw_footer_v2(
     context: str,
     width: int,
     has_selection: bool = False,
-    macros: list[dict] | None = None
+    macros: list[dict] | None = None,
+    scroll_info: str = "",
 ) -> list[str]:
     """
     Render context-sensitive grouped footer.
@@ -1567,9 +1583,23 @@ def draw_footer_v2(
             _k2("n", "narrow", _vi), _k2("m", "media", _vi), _k2("z", "reset", _vi),
         ]
         keys_line = " ".join(keys_parts)
+        # Wrap keys line into multiple boxed rows if it exceeds available width
+        _avail = width - 4
+        if visible_len(keys_line) <= _avail:
+            _keys_lines = [keys_line]
+        else:
+            # Split at labeled group boundaries (items containing "Scope:", "Sort:", "Filter:", "View:")
+            _grp_labels = {"Scope:", "Sort:", "Filter:", "View:"}
+            _groups_kv: list[list[str]] = [[]]
+            for _part in keys_parts:
+                _stripped = ANSI_RE.sub("", _part).strip()
+                if any(_stripped.startswith(lbl) for lbl in _grp_labels) and _groups_kv[-1]:
+                    _groups_kv.append([])
+                _groups_kv[-1].append(_part)
+            _keys_lines = [" ".join(g) for g in _groups_kv if g]
 
         # ── Macros ────────────────────────────────────────────────────────────
-        all_lines = [actions_line, nav_line, keys_line]
+        all_lines = [actions_line, nav_line] + _keys_lines
         if macros:
             macro_items = [
                 f"{idx}:{macro['desc'][:10]}"
@@ -1600,8 +1630,11 @@ def draw_footer_v2(
             f"{colors.CYAN_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Next tab{colors.RESET}",
             f"{colors.CYAN_BOLD}Shift-Tab{colors.RESET}{colors.FG_SECONDARY}=Prev tab{colors.RESET}",
             f"{colors.YELLOW_BOLD}←/→{colors.RESET}{colors.FG_SECONDARY}=tab nav{colors.RESET}",
+            f"{colors.YELLOW_BOLD}'//{colors.RESET}{colors.FG_SECONDARY}=scroll{colors.RESET}",
             f"{colors.PURPLE_BOLD}q{colors.RESET}{colors.FG_SECONDARY}=exit{colors.RESET}",
         ]
+        if scroll_info:
+            nav.append(f"{colors.FG_TERTIARY}{scroll_info}{colors.RESET}")
 
         cmd_line = truncate(
             "  ".join(actions) + f"  {colors.FG_SECONDARY}│{colors.RESET}  " + "  ".join(nav),
@@ -1619,6 +1652,7 @@ def draw_footer_v2(
             f"{colors.CYAN_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Next{colors.RESET}",
             f"{colors.CYAN_BOLD}Shift-Tab{colors.RESET}{colors.FG_SECONDARY}=Prev{colors.RESET}",
             f"{colors.YELLOW_BOLD}←/→{colors.RESET}{colors.FG_SECONDARY}=tab nav{colors.RESET}",
+            f"{colors.YELLOW_BOLD}'//{colors.RESET}{colors.FG_SECONDARY}=scroll{colors.RESET}",
             f"{colors.PURPLE_BOLD}q{colors.RESET}{colors.FG_SECONDARY}=exit{colors.RESET}",
         ]
 
@@ -1634,6 +1668,7 @@ def draw_footer_v2(
             f"{colors.CYAN_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Next tab{colors.RESET}",
             f"{colors.CYAN_BOLD}Shift-Tab{colors.RESET}{colors.FG_SECONDARY}=Prev tab{colors.RESET}",
             f"{colors.YELLOW_BOLD}←/→{colors.RESET}{colors.FG_SECONDARY}=tab nav{colors.RESET}",
+            f"{colors.YELLOW_BOLD}'//{colors.RESET}{colors.FG_SECONDARY}=scroll{colors.RESET}",
             f"{colors.PURPLE_BOLD}q{colors.RESET}{colors.FG_SECONDARY}=exit{colors.RESET}",
         ]
         cmd_line = truncate("  ".join(nav), width - 4)
@@ -1648,6 +1683,7 @@ def draw_footer_v2(
             f"{colors.CYAN_BOLD}Tab{colors.RESET}{colors.FG_SECONDARY}=Next tab{colors.RESET}",
             f"{colors.CYAN_BOLD}Shift-Tab{colors.RESET}{colors.FG_SECONDARY}=Prev tab{colors.RESET}",
             f"{colors.YELLOW_BOLD}←/→{colors.RESET}{colors.FG_SECONDARY}=tab nav{colors.RESET}",
+            f"{colors.YELLOW_BOLD}'//{colors.RESET}{colors.FG_SECONDARY}=scroll{colors.RESET}",
             f"{colors.PURPLE_BOLD}q{colors.RESET}{colors.FG_SECONDARY}=exit{colors.RESET}",
         ]
         cmd_line = truncate("  ".join(nav), width - 4)
@@ -2369,7 +2405,50 @@ def render_info_lines(item: dict, width: int) -> list[str]:
         f"ETA: {item.get('eta')}",
         f"Hash: {item.get('hash')}",
     ]
-    for key in ("save_path", "content_path", "tracker", "completion_on", "added_on", "last_activity"):
+    # ── Paths block ───────────────────────────────────────────────────────────
+    save_path = (raw.get("save_path") or "").rstrip("/").rstrip("\\")
+    dl_path   = (raw.get("download_path") or "").rstrip("/").rstrip("\\")
+    api_cp    = (raw.get("content_path") or "").rstrip("/").rstrip("\\")
+    use_dl    = bool(raw.get("use_download_path"))
+    progress  = float(raw.get("progress") or 0)
+    name      = (raw.get("name") or "").strip()
+
+    # active = where files are right now
+    if api_cp:
+        active = api_cp
+    elif use_dl and progress < 1.0 and dl_path:
+        active = str(Path(dl_path) / name) if name else dl_path
+    elif save_path:
+        active = str(Path(save_path) / name) if name else save_path
+    else:
+        active = ""
+
+    def _path_label(p: str) -> str:
+        if not p:
+            return "N/A"
+        exists = os.path.exists(p)
+        mark = "✓" if exists else "✗"
+        return f"{p}  [{mark}]"
+
+    lines.append("-" * width)
+    lines.append("Paths:")
+    if active:
+        same_as_final = (active == str(Path(save_path) / name) if (save_path and name) else active == save_path)
+        lines.append(f"  Active:     {_path_label(active)}")
+        if save_path and not same_as_final:
+            lines.append(f"  Final dest: {_path_label(str(Path(save_path) / name) if name else save_path)}")
+    if save_path:
+        lines.append(f"  Save path:  {_path_label(save_path)}")
+    if use_dl and dl_path:
+        in_dl = use_dl and progress < 1.0
+        dl_note = "(active — incomplete)" if in_dl else "(complete — moved to save path)"
+        lines.append(f"  Incomplete: {dl_path}  {dl_note}")
+    elif not use_dl:
+        lines.append(f"  Incomplete: N/A (use_download_path=false)")
+
+    # ── Other metadata ────────────────────────────────────────────────────────
+    lines.append("-" * width)
+    for key in ("tracker", "completion_on", "added_on", "last_activity"):
         if key in raw:
             value = raw.get(key)
             if key.endswith("_on") and isinstance(value, (int, float)):
@@ -2381,7 +2460,7 @@ def render_info_lines(item: dict, width: int) -> list[str]:
     return wrapped
 
 
-def render_trackers_lines(trackers: list[dict], width: int, max_rows: int) -> list[str]:
+def render_trackers_lines(trackers: list[dict], width: int) -> list[str]:
     if not trackers:
         return ["No trackers."]
     headers = ["Status", "Tier", "URL"]
@@ -2389,14 +2468,12 @@ def render_trackers_lines(trackers: list[dict], width: int, max_rows: int) -> li
     lines = []
     lines.append(f"{headers[0]:<{widths[0]}} {headers[1]:<{widths[1]}} {headers[2]}")
     lines.append("-" * width)
-    for row in trackers[:max_rows]:
+    for row in trackers:
         status = str(row.get("status", ""))
         tier = str(row.get("tier", ""))
         url = str(row.get("url", ""))
         url = truncate(url, widths[2])
         lines.append(f"{status:<{widths[0]}} {tier:<{widths[1]}} {url}")
-    if len(trackers) > max_rows:
-        lines.append(f"... ({len(trackers) - max_rows} more)")
     return lines
 
 
@@ -2443,7 +2520,7 @@ def file_inode_and_links(content_path: str, file_name: str) -> tuple[str, str]:
     return "-", "-"
 
 
-def render_files_lines(files: list[dict], width: int, max_rows: int, content_path: str = "") -> list[str]:
+def render_files_lines(files: list[dict], width: int, content_path: str = "") -> list[str]:
     if not files:
         return ["No files found."]
     files.sort(key=lambda x: x.get("name", ""))
@@ -2501,7 +2578,7 @@ def render_files_lines(files: list[dict], width: int, max_rows: int, content_pat
     lines.append(header_line)
     lines.append("-" * width)
     priority_map = {0: "Do not DL", 1: "Normal", 2: "High", 6: "Max", 7: "Forced"}
-    for idx, f in enumerate(files[:max_rows]):
+    for idx, f in enumerate(files):
         file_name = str(f.get("name", ""))
         name = truncate(file_name, widths[3])
         size = size_str(f.get("size", 0))
@@ -2511,12 +2588,10 @@ def render_files_lines(files: list[dict], width: int, max_rows: int, content_pat
         row_values = [str(idx), inode, links, name, size, prog, truncate(prio, widths[6])]
         line = col_sep.join(fmt_cell(i, row_values[i], row_align) for i in range(len(widths)))
         lines.append(line)
-    if len(files) > max_rows:
-        lines.append(f"... ({len(files) - max_rows} more)")
     return lines
 
 
-def render_peers_lines(peers_payload: dict, width: int, max_rows: int) -> list[str]:
+def render_peers_lines(peers_payload: dict, width: int) -> list[str]:
     peers = peers_payload.get("peers") or {}
     if not peers:
         return ["No peers."]
@@ -2541,7 +2616,7 @@ def render_peers_lines(peers_payload: dict, width: int, max_rows: int) -> list[s
     header_line = "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers))
     lines.append(header_line)
     lines.append("-" * width)
-    for row in rows[:max_rows]:
+    for row in rows:
         client = truncate(row["client"], widths[5])
         line = (
             f"{row['addr']:<{widths[0]}} "
@@ -2552,8 +2627,6 @@ def render_peers_lines(peers_payload: dict, width: int, max_rows: int) -> list[s
             f"{client:<{widths[5]}}"
         )
         lines.append(line)
-    if len(rows) > max_rows:
-        lines.append(f"... ({len(rows) - max_rows} more)")
     return lines
 
 
@@ -2938,6 +3011,8 @@ def main() -> int:
     # B: fast visible-row refresh state
     last_fast_refresh: float = 0.0      # last time we did a direct-API partial fetch
     visible_hashes: list[str] = []      # hashes currently displayed on screen (set during render)
+    # Tab view scroll state
+    tab_scroll_offset: int = 0          # current vertical scroll offset in tab view
     list_start_row = 0
     list_block_height = 0
     have_full_draw = False
@@ -3555,6 +3630,7 @@ def main() -> int:
                 if not selected_row_all:
                     selection_hash = selection_name = None
                     in_tab_view = False
+                    tab_scroll_offset = 0
                     set_banner("Selection cleared: item removed.")
                     data_changed = True
                 else:
@@ -3672,22 +3748,30 @@ def main() -> int:
                         if active_label == "Info": content_lines = render_info_lines(selected_row, tab_width)
                         elif active_label == "Trackers":
                             trackers = fetch_trackers(opener, api_url, selection_hash)
-                            content_lines = render_trackers_lines(trackers, tab_width, max_rows)
+                            content_lines = render_trackers_lines(trackers, tab_width)
                         elif active_label == "Content":
                             files = fetch_files(opener, api_url, selection_hash)
                             content_lines = render_files_lines(
                                 files,
                                 tab_width,
-                                max_rows,
                                 get_content_path(selected_row.get("raw") or {}),
                             )
                         elif active_label == "Peers":
                             peers_payload = fetch_peers(opener, api_url, selection_hash)
-                            content_lines = render_peers_lines(peers_payload, tab_width, max_rows)
+                            content_lines = render_peers_lines(peers_payload, tab_width)
                         else: content_lines = render_mediainfo_lines(selected_row, tab_width, colors)
-                        for line in content_lines[:max_rows]: tui_print(line)
+                        # Clamp scroll offset
+                        max_scroll = max(0, len(content_lines) - max_rows)
+                        tab_scroll_offset = max(0, min(tab_scroll_offset, max_scroll))
+                        visible_content = content_lines[tab_scroll_offset : tab_scroll_offset + max_rows]
+                        for line in visible_content: tui_print(line)
+                        # Scroll indicator
+                        if len(content_lines) > max_rows:
+                            _pct = int(tab_scroll_offset / max_scroll * 100) if max_scroll > 0 else 100
+                            _bot = tab_scroll_offset + len(visible_content)
+                            tui_print(f"  ↕ lines {tab_scroll_offset+1}–{_bot}/{len(content_lines)}  ({_pct}%)  '↑  /↓  PgUp/PgDn")
                         tui_print(tab_divider)
-                        footer_row = 10 + len(content_lines[:max_rows]) + 1
+                        footer_row = 10 + len(visible_content) + 1
                 else:
                     if not have_full_draw:
                         output_buffer = "\033[H\033[J" # Start with clear
@@ -3770,7 +3854,8 @@ def main() -> int:
                         context=footer_context,
                         width=content_width,
                         has_selection=bool(selection_hash),
-                        macros=macros_global
+                        macros=macros_global,
+                        scroll_info="",
                     )
                 else:
                     footer_lines = draw_footer_full_compact(
@@ -3809,14 +3894,35 @@ def main() -> int:
                     # q exits tab view (bare ESC is discarded by read_input_queue)
                     if key == "q":
                         in_tab_view = False
+                        tab_scroll_offset = 0
                         have_full_draw = False
                         continue
 
-                    # Arrow keys → tab navigation
+                    # Vertical scroll: ' (↑) / / (↓) / PGUP / PGDN
+                    if key == "'":
+                        tab_scroll_offset = max(0, tab_scroll_offset - 1)
+                        need_redraw = True
+                        continue
+                    if key == "/":
+                        tab_scroll_offset += 1  # clamped during render
+                        need_redraw = True
+                        continue
+                    if key == "PGUP":
+                        tab_scroll_offset = max(0, tab_scroll_offset - 10)
+                        need_redraw = True
+                        continue
+                    if key == "PGDN":
+                        tab_scroll_offset += 10  # clamped during render
+                        need_redraw = True
+                        continue
+
+                    # Arrow keys → tab navigation (reset scroll on switch)
                     if key == ".":   # Right arrow → next tab
+                        tab_scroll_offset = 0
                         cycle_tabs(direction=1, exit_after_last=False)
                         continue
                     if key == ",":   # Left arrow → prev tab
+                        tab_scroll_offset = 0
                         cycle_tabs(direction=-1, exit_after_last=False)
                         continue
 
@@ -3828,7 +3934,7 @@ def main() -> int:
 
                     # Tab / Shift-Tab / Ctrl-Tab fall through to cycle_tabs below
                     if key in {"\t", "SHIFT_TAB", "CTRL_TAB"}:
-                        pass
+                        tab_scroll_offset = 0
                     else:
                         continue   # ignore all other keys; don't exit
                 # ─────────────────────────────────────────────────────────────
@@ -3874,7 +3980,7 @@ def main() -> int:
                     help_lines.append(f"{colors.YELLOW}p  Presets:{colors.RESET}  Save/load named filter sets. At the prompt:")
                     help_lines.append(f"             1-9       load filter set from slot N")
                     help_lines.append(f"             s1-s9     save current filters to slot N")
-                    help_lines.append(f"             Clearing a filter: press its key and leave blank")
+                    help_lines.append(f"             Clearing a filter: press its key and enter -  (blank = no change)")
 
                     help_lines.append(f"\n{colors.CYAN_BOLD}STATUS MAPPING TABLE{colors.RESET}")
                     help_lines.append(f"{'Code':<5} {'API Term':<20} {'Group/Description':<30}")
@@ -4141,7 +4247,8 @@ def main() -> int:
                         else:
                             selection_hash = focused.get("hash")
                             selection_name = focused.get("name")
-                            active_tab = 0 # Reset tab focus for new selection
+                            active_tab = 0  # Reset tab focus for new selection
+                            tab_scroll_offset = 0
                     continue
                 if key == "\t":
                     cycle_tabs(direction=1, exit_after_last=True)
@@ -4194,25 +4301,33 @@ def main() -> int:
                     continue
                 if key == "c":
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                    val = read_line("Category  (exact name  -=uncategorized  !name=exclude  blank=clear): ").strip()
-                    filters = [f for f in filters if f.get("type") != "category"]
-                    if val:
+                    val = read_line("Category  (exact name  none=uncategorized  !name=exclude  -=clear  blank=no change): ").strip()
+                    if val == "-":
+                        filters = [f for f in filters if f.get("type") != "category"]
+                    elif val:
+                        filters = [f for f in filters if f.get("type") != "category"]
                         negate = False
                         if val.startswith("!"): negate = True; val = val[1:]
-                        filters.append({"type": "category", "value": val, "enabled": True, "negate": negate})
+                        cat_val = "" if val == "none" else val
+                        filters.append({"type": "category", "value": cat_val, "enabled": True, "negate": negate})
                     tty.setraw(fd); have_full_draw = False; continue
                 if key == "#":
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                    val = read_line("Tag  (tagA  tagA,tagB=OR  tagA+tagB=AND  !tagA=NOT  blank=clear): ").strip()
-                    filters = [f for f in filters if f.get("type") != "tag"]
-                    if val:
+                    val = read_line("Tag  (tagA  tagA,tagB=OR  tagA+tagB=AND  !tagA=NOT  -=clear  blank=no change): ").strip()
+                    if val == "-":
+                        filters = [f for f in filters if f.get("type") != "tag"]
+                    elif val:
+                        filters = [f for f in filters if f.get("type") != "tag"]
                         parsed = parse_tag_filter(val)
                         if parsed: parsed["enabled"] = True; filters.append(parsed)
                     tty.setraw(fd); have_full_draw = False; continue
                 if key == "l":
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                    val = read_line("Compound  (q=name  cat=cat  tag=expr  hash=abc  status=grp  space-separated  blank=clear): ").strip()
-                    if val: filters = parse_filter_line(val, filters)
+                    val = read_line("Compound  (q=name  cat=cat  tag=expr  hash=abc  status=grp  space-separated  -=clear all  blank=no change): ").strip()
+                    if val == "-":
+                        filters = []
+                    elif val:
+                        filters = parse_filter_line(val, filters)
                     tty.setraw(fd); have_full_draw = False; continue
                 if key == "f":
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -4226,10 +4341,12 @@ def main() -> int:
                     _cur = ", ".join(current_status_filter_values) if current_status_filter_values else "none"
                     val = read_line(
                         f"Status  (downloading  seeding  paused  completed  error  checking  all"
-                        f"  comma-list  !term=exclude  blank=clear)  current={_cur}: "
+                        f"  comma-list  !term=exclude  -=clear  blank=no change)  current={_cur}: "
                     ).strip()
-                    filters = [f for f in filters if f.get("type") != "status"]
-                    if val:
+                    if val == "-":
+                        filters = [f for f in filters if f.get("type") != "status"]
+                    elif val:
+                        filters = [f for f in filters if f.get("type") != "status"]
                         negate = False
                         if val.startswith("!"):
                             negate = True
