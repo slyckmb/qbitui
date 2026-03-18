@@ -479,6 +479,8 @@ def daemon_main(argv: Optional[List[str]] = None) -> int:
         last_active_at = time.time()
         last_fetch_at = 0.0
         effective_interval_s = max(args.min_interval, min(args.max_interval, args.default_interval))
+        consecutive_failures = 0
+        _MAX_BACKOFF_S = 60.0
 
         while running:
             now = time.time()
@@ -534,8 +536,14 @@ def daemon_main(argv: Optional[List[str]] = None) -> int:
                             "updated_at_iso": _iso(now),
                         }
                     )
+                    consecutive_failures = 0
+                    last_fetch_at = now  # success: next fetch after full interval
                 except Exception as exc:
                     now = time.time()
+                    consecutive_failures += 1
+                    backoff_s = min(
+                        2 ** (consecutive_failures - 1) * args.min_interval, _MAX_BACKOFF_S
+                    )
                     _write_meta(
                         {
                             "source": "daemon_error",
@@ -544,11 +552,14 @@ def daemon_main(argv: Optional[List[str]] = None) -> int:
                             "last_error_at_iso": _iso(now),
                             "active_leases": active_count,
                             "effective_interval_s": effective_interval_s,
+                            "backoff_s": backoff_s,
+                            "consecutive_failures": consecutive_failures,
                             "updated_at": now,
                             "updated_at_iso": _iso(now),
                         }
                     )
-                last_fetch_at = now
+                    # Retry sooner than normal interval; backs off 15s, 30s, 60s cap
+                    last_fetch_at = now - (effective_interval_s - backoff_s)
 
             time.sleep(args.sleep_step)
         return 0
