@@ -1169,14 +1169,22 @@ def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
     err_str = f"  {colors.ERROR}err:{err[:25]}{colors.RESET}" if err else ""
     leases = cache_info.get("active_leases", 0)
     leases_str = f"  {colors.FG_TERTIARY}{leases}L{colors.RESET}"
+    fast_iv = cache_info.get("fast_refresh_interval", 0)
+    fast_str = (
+        f"  {colors.FG_SECONDARY}fast={colors.YELLOW}{float(fast_iv):.0f}s{colors.RESET}"
+        if fast_iv and float(fast_iv) > 0
+        else f"  {colors.FG_TERTIARY}fast=off{colors.RESET}"
+    )
+    no_daemon_str = f"  {colors.FG_TERTIARY}[no-daemon]{colors.RESET}" if cache_info.get("no_daemon") else ""
     return (
         f"{colors.FG_SECONDARY}Cache:{colors.RESET} {dot} {colors.FG_TERTIARY}{path_short}{colors.RESET}"
-        f"  {colors.FG_SECONDARY}every {colors.YELLOW}{interval_str}{colors.RESET}"
+        f"  {colors.FG_SECONDARY}bulk={colors.YELLOW}{interval_str}{colors.RESET}"
+        f"{fast_str}"
         f"  {colors.FG_SECONDARY}↑cache {colors.CYAN}{hits}{colors.RESET}"
         f"  {colors.FG_SECONDARY}↓qbit {colors.BLUE}{direct}{colors.RESET}"
         f"  {colors.FG_SECONDARY}hit {colors.GREEN}{hit_pct}{colors.RESET}"
         f"  {colors.FG_TERTIARY}{age_str}{colors.RESET}"
-        f"{items_str}{leases_str}{qb_profile_str}{err_str}"
+        f"{items_str}{leases_str}{qb_profile_str}{no_daemon_str}{err_str}"
     )
 
 
@@ -2845,8 +2853,9 @@ def main() -> int:
     parser.add_argument("--cache-agent-cmd", type=Path, default=Path(__file__).with_name("qbit-cache-agent.py"), help="Path to qbit-cache-agent.py (default: bin/qbit-cache-agent.py alongside this script).")
     parser.add_argument("--cache-status", action="store_true", help="Print cache/daemon status JSON and exit (requires --use-shared-cache).")
     parser.add_argument("--cache-base-dir", type=Path, default=DEFAULT_HASHALL_CACHE_BASE, help="Shared cache base directory (default: ~/.cache/hashall-qb).")
-    parser.add_argument("--fast-refresh-interval", type=float, default=3.0, metavar="SECS",
-                        help="Interval in seconds for fast direct-API refresh of visible rows (0 = disabled, default: 3).")
+    parser.add_argument("--cache-no-daemon", action="store_true", help="Never ping or spawn the cache daemon; read cache file directly only. Useful for read-only monitoring sessions.")
+    parser.add_argument("--fast-refresh-interval", type=float, default=0, metavar="SECS",
+                        help="Interval in seconds for fast direct-API refresh of visible rows (0 = disabled, default: 0). Use Shift+R in TUI to set interactively.")
     parser.add_argument("--daemon-ping-grace", type=float, default=5.0, metavar="SECS",
                         help="Extra seconds past cache-max-age before pinging daemon to restart (default: 5).")
     parser.add_argument("--daemon-ping-interval", type=float, default=5.0, metavar="SECS",
@@ -3537,7 +3546,7 @@ def main() -> int:
                 _cf_age_wall = time.time() - _cf_mtime if _cf_mtime > 0 else float("inf")
 
                 # Lazy daemon ping: only fire when cache has gone stale past grace period
-                if _cf_age_wall > (args.cache_max_age + args.daemon_ping_grace):
+                if not args.cache_no_daemon and _cf_age_wall > (args.cache_max_age + args.daemon_ping_grace):
                     if (now - last_daemon_ping) >= args.daemon_ping_interval:
                         ping_daemon_nonblocking(args.cache_agent_cmd, cache_env)
                         last_daemon_ping = now
@@ -3670,6 +3679,8 @@ def main() -> int:
                 "last_error": cache_meta.get("last_error", ""),
                 "active_leases": cache_meta.get("active_leases", 0),
                 "qb_profile": cache_meta.get("qb_profile") or {},
+                "fast_refresh_interval": args.fast_refresh_interval,
+                "no_daemon": args.cache_no_daemon,
             }
 
             if data_changed or need_redraw:
@@ -4440,6 +4451,35 @@ def main() -> int:
                             set_banner(result, duration=4.0)
                         else:
                             set_banner(f"Macro {macro_idx} not configured")
+                    continue
+
+                # === FAST-REFRESH INTERVAL CONTROLS ===
+                # Shift+R: interactively set fast-refresh interval
+                if key == "R" and not in_tab_view:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    _cur = f"{args.fast_refresh_interval:.0f}s" if args.fast_refresh_interval > 0 else "off"
+                    _val = read_line(f"Fast refresh interval in seconds (0 or blank = off, current={_cur}): ").strip()
+                    if _val == "" or _val == "0":
+                        args.fast_refresh_interval = 0.0
+                        set_banner("Fast refresh disabled")
+                    else:
+                        try:
+                            _secs = float(_val)
+                            if _secs > 0:
+                                args.fast_refresh_interval = _secs
+                                set_banner(f"Fast refresh set to {_secs:.0f}s")
+                            else:
+                                args.fast_refresh_interval = 0.0
+                                set_banner("Fast refresh disabled")
+                        except ValueError:
+                            set_banner("Invalid interval — must be a number")
+                    tty.setraw(fd); have_full_draw = False; continue
+
+                # '-': disable fast refresh immediately
+                if key == "-" and not in_tab_view:
+                    args.fast_refresh_interval = 0.0
+                    set_banner("Fast refresh disabled")
+                    have_full_draw = False
                     continue
 
                 # Actions
