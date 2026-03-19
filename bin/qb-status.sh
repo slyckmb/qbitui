@@ -30,7 +30,7 @@ Optional watchdog mode pauses unexpected downloading torrents and emits alerts.
 Env: QBIT_URL, QBIT_USER, QBIT_PASS
 
 Options:
-  --interval N            Poll interval seconds (default: 15)
+  --interval N            Poll interval seconds (default: 30)
   --once                  Run one sample then exit
   --until-clear           Exit when checking=0 and moving=0 and down=0
   --enforce-paused-dl     Pause unexpected downloading/stalledDL torrents
@@ -41,7 +41,7 @@ Options:
   --dashboard             Overwrite-in-place dashboard mode (like watch)
   --cache                 Read qB torrents/info via shared cache agent (default)
   --no-cache              Bypass shared cache and query qB API directly
-  --cache-max-age N       Max cache age seconds when --cache is enabled (default: 15)
+  --cache-max-age N       Max cache age seconds when --cache is enabled (default: 30)
   -h, --help              Show help
 USAGE
 }
