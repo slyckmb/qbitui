@@ -410,7 +410,16 @@ def daemon_main(argv: Optional[List[str]] = None) -> int:
     parser = build_daemon_parser()
     args = parser.parse_args(argv)
 
-    qbit_url = os.environ.get("QBIT_URL", "http://localhost:9003").strip()
+    # Accept the same URL env var chain as qbittorrent.py so that setting any
+    # of the standard QBITTORRENT_* vars is picked up by the daemon too.
+    qbit_url = (
+        os.environ.get("QBIT_URL")
+        or os.environ.get("QBITTORRENT_API_URL")
+        or os.environ.get("QBITTORRENT_URL")
+        or os.environ.get("QBITTORRENT_HOST")
+        or os.environ.get("QBITTORRENTAPI_HOST")
+        or "http://localhost:9003"
+    ).strip()
     username = os.environ.get("QBIT_USER") or os.environ.get("QBITTORRENTAPI_USERNAME") or "admin"
     password = os.environ.get("QBIT_PASS") or os.environ.get("QBITTORRENTAPI_PASSWORD") or "adminpass"
 
@@ -469,6 +478,7 @@ def daemon_main(argv: Optional[List[str]] = None) -> int:
                     "active_leases": 0,
                     "effective_interval_s": None,
                     "last_error": "",
+                    "consecutive_failures": 0,
                     "qb_profile": profile,
                     "updated_at": now,
                     "updated_at_iso": _iso(now),
@@ -531,6 +541,7 @@ def daemon_main(argv: Optional[List[str]] = None) -> int:
                             "active_leases": active_count,
                             "effective_interval_s": effective_interval_s,
                             "last_error": "",
+                            "consecutive_failures": 0,
                             "qb_profile": profile,
                             "updated_at": now,
                             "updated_at_iso": _iso(now),
