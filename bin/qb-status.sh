@@ -17,7 +17,7 @@ MAX_ITERATIONS=0
 DASHBOARD=0
 USE_CACHE=1
 CACHE_MAX_AGE=30
-CACHE_AGENT="${QBIT_CACHE_AGENT:-/home/michael/dev/tools/qbitui/bin/qbit-cache-agent.py}"
+CACHE_AGENT="${QBIT_CACHE_AGENT:-/home/michael/dev/tools/silo/bin/qbit-cache-agent.py}"
 CACHE_CLIENT_ID="$(basename "$0"):$$"
 declare -a ALLOW_HASHES=()
 
