@@ -5,8 +5,8 @@ set -euo pipefail
 SCRIPT_VERSION="1.2.3"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QBIT_URL="${QBIT_URL:-http://localhost:9003}"
-QBIT_USER="${QBIT_USER:-admin}"
-QBIT_PASS="${QBIT_PASS:-adminpass}"
+QBIT_USER="${QBIT_USER:-${QBITTORRENTAPI_USERNAME:-admin}}"
+QBIT_PASS="${QBIT_PASS:-${QBITTORRENTAPI_PASSWORD:-adminpass}}"
 INTERVAL_S=30
 ONCE=0
 UNTIL_CLEAR=0
@@ -17,7 +17,7 @@ MAX_ITERATIONS=0
 DASHBOARD=0
 USE_CACHE=1
 CACHE_MAX_AGE=30
-CACHE_AGENT="${QBIT_CACHE_AGENT:-$SCRIPT_DIR/qb-cache-agent.py}"
+CACHE_AGENT="${QBIT_CACHE_AGENT:-/home/michael/dev/tools/silo/bin/qbit-cache-agent.py}"
 CACHE_CLIENT_ID="$(basename "$0"):$$"
 declare -a ALLOW_HASHES=()
 
