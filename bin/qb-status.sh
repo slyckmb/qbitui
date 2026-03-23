@@ -19,6 +19,7 @@ USE_CACHE=1
 CACHE_MAX_AGE=30
 CACHE_AGENT="${QBIT_CACHE_AGENT:-/home/michael/dev/tools/silo/bin/qbit-cache-agent.py}"
 CACHE_CLIENT_ID="$(basename "$0"):$$"
+CACHE_PYTHON="${QBIT_CACHE_PYTHON:-}"
 declare -a ALLOW_HASHES=()
 
 usage() {
@@ -124,6 +125,46 @@ if [[ "$USE_CACHE" -eq 1 && ! -f "$CACHE_AGENT" ]]; then
   echo "--cache enabled but cache agent not found: $CACHE_AGENT" >&2
   exit 2
 fi
+
+resolve_cache_python() {
+  resolve_venv_python() {
+    local root="$1" venv_name="" venv_python=""
+    [[ -f "$root/.venv_name" ]] || return 1
+    venv_name="$(<"$root/.venv_name")"
+    [[ -n "$venv_name" ]] || return 1
+    venv_python="${HOME}/.venvs/${venv_name}/bin/python3"
+    [[ -x "$venv_python" ]] || return 1
+    printf '%s\n' "$venv_python"
+  }
+
+  if [[ -n "$CACHE_PYTHON" ]]; then
+    printf '%s\n' "$CACHE_PYTHON"
+    return
+  fi
+
+  local agent_realpath="" agent_dir="" repo_root="" hashall_root=""
+  agent_realpath="$(readlink -f "$CACHE_AGENT" 2>/dev/null || printf '%s' "$CACHE_AGENT")"
+  agent_dir="$(cd "$(dirname "$agent_realpath")" && pwd)"
+  repo_root="$(cd "$agent_dir/.." && pwd)"
+
+  if resolve_venv_python "$repo_root" >/dev/null 2>&1; then
+    resolve_venv_python "$repo_root"
+    return
+  fi
+
+  # `silo` exposes thin wrapper scripts that exec the canonical hashall tools.
+  if [[ -f "$agent_dir/silo_hashall_shared.py" ]]; then
+    hashall_root="${HASHALL_ROOT:-/home/michael/dev/work/hashall}"
+    if resolve_venv_python "$hashall_root" >/dev/null 2>&1; then
+      resolve_venv_python "$hashall_root"
+      return
+    fi
+  fi
+
+  command -v python3
+}
+
+CACHE_PYTHON="$(resolve_cache_python)"
 
 COOKIE_FILE="$(mktemp)"
 _on_exit() {
@@ -256,7 +297,7 @@ while true; do
   if [[ "$USE_CACHE" -eq 1 ]]; then
     _raw=""
     if ! _raw="$(QBIT_URL="$QBIT_URL" QBIT_USER="$QBIT_USER" QBIT_PASS="$QBIT_PASS" \
-      python3 "$CACHE_AGENT" \
+      "$CACHE_PYTHON" "$CACHE_AGENT" \
         --max-age "$CACHE_MAX_AGE" \
         --requested-interval "$INTERVAL_S" \
         --client-id "$CACHE_CLIENT_ID" \
