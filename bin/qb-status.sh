@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Version: 1.2.3
+# Version: 1.2.4
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.3"
+SCRIPT_VERSION="1.2.4"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QBIT_URL="${QBIT_URL:-http://localhost:9003}"
 QBIT_USER="${QBIT_USER:-${QBITTORRENTAPI_USERNAME:-admin}}"
@@ -18,6 +18,7 @@ DASHBOARD=0
 USE_CACHE=1
 CACHE_MAX_AGE=30
 CACHE_AGENT="${QBIT_CACHE_AGENT:-${SILO_CACHE_AGENT:-/home/michael/dev/tools/silo/bin/silo-cache-agent.py}}"
+CACHE_FILE_FALLBACK="${QBIT_CACHE_FALLBACK_FILE:-$HOME/.cache/hashall-qb/torrents-info.json}"
 CACHE_CLIENT_ID="$(basename "$0"):$$"
 CACHE_PYTHON="${QBIT_CACHE_PYTHON:-}"
 declare -a ALLOW_HASHES=()
@@ -166,6 +167,23 @@ resolve_cache_python() {
 
 CACHE_PYTHON="$(resolve_cache_python)"
 
+load_cache_file_fallback() {
+  local max_age="$1"
+  local now epoch age raw
+  [[ -f "$CACHE_FILE_FALLBACK" ]] || return 1
+  epoch="$(stat -c '%Y' "$CACHE_FILE_FALLBACK" 2>/dev/null || true)"
+  [[ -n "$epoch" && "$epoch" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)"
+  age=$((now - epoch))
+  (( age >= 0 )) || age=0
+  if (( max_age > 0 && age > max_age )); then
+    return 1
+  fi
+  raw="$(<"$CACHE_FILE_FALLBACK")"
+  jq -e . >/dev/null 2>&1 <<<"$raw" || return 1
+  printf '%s' "$raw"
+}
+
 COOKIE_FILE="$(mktemp)"
 _on_exit() {
   rm -f "$COOKIE_FILE"
@@ -303,9 +321,17 @@ while true; do
         --client-id "$CACHE_CLIENT_ID" \
         --ensure-daemon \
         2>/dev/null)"; then
-      FETCH_ERROR="cache_fetch_failed"
+      if _raw="$(load_cache_file_fallback "$CACHE_MAX_AGE" 2>/dev/null)"; then
+        TORRENTS_JSON="$_raw"
+      else
+        FETCH_ERROR="cache_fetch_failed"
+      fi
     elif ! jq -e . >/dev/null 2>&1 <<<"$_raw"; then
-      FETCH_ERROR="cache_invalid_json"
+      if _raw="$(load_cache_file_fallback "$CACHE_MAX_AGE" 2>/dev/null)"; then
+        TORRENTS_JSON="$_raw"
+      else
+        FETCH_ERROR="cache_invalid_json"
+      fi
     else
       TORRENTS_JSON="$_raw"
     fi
