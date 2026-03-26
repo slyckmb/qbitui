@@ -54,6 +54,7 @@ _MULTICALL_FIELDS = [
     "d.peers_accounted=",# [11] total peer count
     "d.creation_date=",  # [12] unix timestamp torrent was added
     "d.directory=",      # [13] save directory path
+    "d.hashing=",        # [14] 0=not hashing, 1=hash-checking (d.check_hash in progress)
 ]
 
 # Indices into the data result list (0-based, post-consumption of arg3)
@@ -71,6 +72,7 @@ _F_CUSTOM1   = 10
 _F_PEERS     = 11
 _F_CREATED   = 12
 _F_DIRECTORY = 13
+_F_HASHING   = 14
 
 # ── Formatting helpers (mirrors dashboard equivalents) ───────────────────────
 
@@ -134,48 +136,61 @@ def _added_short_str(ts) -> str:
 # ── State normalization ──────────────────────────────────────────────────────
 
 def _normalize_state(state: int, is_active: int, message: str,
-                     size_bytes: int, completed_bytes: int, dl_rate: int) -> str:
+                     size_bytes: int, completed_bytes: int,
+                     dl_rate: int, up_rate: int = 0, hashing: int = 0) -> str:
     """
     Map rTorrent state integers to a qBit-compatible API state string.
 
     The returned string must be a key in STATUS_MAPPING (silo-dashboard.py)
     so ColorScheme.status_color() maps it to the right color automatically.
 
-    rTorrent state logic:
+    rTorrent state logic (evaluated top-to-bottom):
+      hashing=1                              → "checkingDL" / "checkingUP"
       message != ""                          → "error"
-      state=0                                → "stoppedDL" (maps to PD / paused group)
+      state=0, completed                     → "stoppedUP"  (seeded then stopped)
+      state=0                                → "stoppedDL"  (paused group)
       state=1, is_active=0, completed        → "pausedUP"
       state=1, is_active=0                   → "pausedDL"
+      state=1, is_active=1, size=0, dl>0     → "metaDL"     (magnet, no metadata yet)
       state=1, is_active=1, dl_rate > 0      → "downloading"
-      state=1, is_active=1, completed        → "uploading"
+      state=1, is_active=1, completed, up>0  → "uploading"
+      state=1, is_active=1, completed        → "stalledUP"  (seeding, no peers)
       else                                   → "stalledDL"
     """
+    completed = size_bytes > 0 and completed_bytes >= size_bytes
+    if hashing:
+        return "checkingUP" if completed else "checkingDL"
     if message:
         return "error"
-    completed = size_bytes > 0 and completed_bytes >= size_bytes
     if state == 0:
-        return "stoppedDL"
+        return "stoppedUP" if completed else "stoppedDL"
     if is_active == 0:
         return "pausedUP" if completed else "pausedDL"
+    # state=1, is_active=1 — active
+    if size_bytes == 0 and dl_rate > 0:
+        return "metaDL"   # magnet still downloading metadata
     if dl_rate > 0:
         return "downloading"
     if completed:
-        return "uploading"
+        return "uploading" if up_rate > 0 else "stalledUP"
     return "stalledDL"
 
 
 # Map full state strings to short 2-char codes (mirrors STATE_CODE in dashboard)
 _STATE_CODE = {
-    "downloading": "D",
-    "uploading":   "U",
-    "pausedDL":    "PD",
-    "pausedUP":    "PU",
-    "stoppedDL":   "PD",  # renders same as pausedDL
-    "stoppedUP":   "PU",
-    "stalledDL":   "SD",
-    "stalledUP":   "SU",
-    "error":       "E",
-    "checking":    "CR",
+    "downloading":  "D",
+    "uploading":    "U",
+    "pausedDL":     "PD",
+    "pausedUP":     "PU",
+    "stoppedDL":    "PD",  # renders same as pausedDL
+    "stoppedUP":    "PU",
+    "stalledDL":    "SD",
+    "stalledUP":    "SU",
+    "checkingDL":   "CD",
+    "checkingUP":   "CU",
+    "metaDL":       "MD",
+    "error":        "E",
+    "checking":     "CR",
 }
 
 
@@ -222,11 +237,13 @@ def fetch(url: str) -> list[dict]:
             peers        = int(item[_F_PEERS])   or 0
             created      = item[_F_CREATED]
             directory    = str(item[_F_DIRECTORY] or "")
+            hashing      = int(item[_F_HASHING]) if len(item) > _F_HASHING else 0
 
             # Derived values
             ratio_float  = ratio_raw / 1000.0
             api_state    = _normalize_state(
-                state, is_active, message, size_bytes, completed_b, dl_rate
+                state, is_active, message, size_bytes, completed_b,
+                dl_rate, up_rate, hashing
             )
             progress_f   = (completed_b / size_bytes) if size_bytes > 0 else 0.0
             progress_pct = int(progress_f * 100)
