@@ -28,26 +28,35 @@ NAME = "rTorrent"
 KEY  = "rtorrent"   # key used in active_client comparisons
 
 # ── rTorrent multicall fields ────────────────────────────────────────────────
+#
+# API: d.multicall.filtered(view, filter_cmd, filter_value_CONSUMED, field1, ...)
+#
+# IMPORTANT: arg3 (filter_value) is silently consumed and never returned as data.
+# To work around this, _MULTICALL_FIELDS starts with "d.hash=" twice:
+#   call args: ('', '', 'd.hash=', 'd.hash=', 'd.name=', ...)
+#                       ^^^^^^^^ consumed    ^^^^^^^^ real data index 0
+#
+# The result list for each torrent therefore starts at the second d.hash= (index 0).
+# d.tracker_domain= is NOT available on this rTorrent build — tracker field is "-".
 
 _MULTICALL_FIELDS = [
-    "d.hash=",
-    "d.name=",
-    "d.size_bytes=",
-    "d.completed_bytes=",
-    "d.up.rate=",        # bytes/sec upload rate
-    "d.down.rate=",      # bytes/sec download rate
-    "d.ratio=",          # integer: actual_ratio * 1000
-    "d.state=",          # 0=stopped, 1=started
-    "d.is_active=",      # 0=inactive, 1=active
-    "d.message=",        # error / tracker message string
-    "d.custom1=",        # ruTorrent label → used as category
-    "d.peers_accounted=",
-    "d.creation_date=",
-    "d.directory=",      # save path / target directory
-    "d.tracker_domain=", # primary tracker domain (rTorrent ≥0.9.7; may be "")
+    "d.hash=",           # [0]  info hash (uppercase from rTorrent)
+    "d.name=",           # [1]  display name
+    "d.size_bytes=",     # [2]  total size in bytes
+    "d.completed_bytes=",# [3]  downloaded bytes
+    "d.up.rate=",        # [4]  current upload rate bytes/sec
+    "d.down.rate=",      # [5]  current download rate bytes/sec
+    "d.ratio=",          # [6]  ratio × 1000 (integer)
+    "d.state=",          # [7]  0=stopped, 1=started
+    "d.is_active=",      # [8]  0=inactive, 1=active (transfers running)
+    "d.message=",        # [9]  tracker/error message
+    "d.custom1=",        # [10] ruTorrent label → used as category
+    "d.peers_accounted=",# [11] total peer count
+    "d.creation_date=",  # [12] unix timestamp torrent was added
+    "d.directory=",      # [13] save directory path
 ]
 
-# Indices into the multicall result list (keep in sync with _MULTICALL_FIELDS)
+# Indices into the data result list (0-based, post-consumption of arg3)
 _F_HASH      = 0
 _F_NAME      = 1
 _F_SIZE      = 2
@@ -62,7 +71,6 @@ _F_CUSTOM1   = 10
 _F_PEERS     = 11
 _F_CREATED   = 12
 _F_DIRECTORY = 13
-_F_TRACKER   = 14
 
 # ── Formatting helpers (mirrors dashboard equivalents) ───────────────────────
 
@@ -190,7 +198,10 @@ def fetch(url: str) -> list[dict]:
     """
     try:
         proxy = connect(url)
-        results = proxy.d.multicall2("", "main", *_MULTICALL_FIELDS)
+        # d.multicall.filtered signature: (view, filter_cmd, filter_value_CONSUMED, field...)
+        # arg3 is silently consumed — pass "d.hash=" twice so real data starts at index 0.
+        # view="" = all downloads; filter_cmd="" = no filtering.
+        results = proxy.d.multicall.filtered("", "", "d.hash=", *_MULTICALL_FIELDS)
     except Exception:
         return []
 
@@ -211,7 +222,6 @@ def fetch(url: str) -> list[dict]:
             peers        = int(item[_F_PEERS])   or 0
             created      = item[_F_CREATED]
             directory    = str(item[_F_DIRECTORY] or "")
-            tracker_dom  = str(item[_F_TRACKER] or "")
 
             # Derived values
             ratio_float  = ratio_raw / 1000.0
@@ -226,7 +236,7 @@ def fetch(url: str) -> list[dict]:
                 eta_secs = (size_bytes - completed_b) // dl_rate
 
             category = label or "-"
-            tracker  = tracker_dom if tracker_dom else "-"
+            tracker  = "-"  # d.tracker_domain= not available on this rTorrent build
 
             # raw sub-dict: must have state/progress/dlspeed/upspeed so that
             # draw_header_full_compact() can compute aggregate stats from
@@ -240,6 +250,7 @@ def fetch(url: str) -> list[dict]:
                 "upspeed":   up_rate,
                 "size":      size_bytes,
                 "ratio":     ratio_float,
+                "eta":       eta_secs,      # sort_key reads raw.get("eta")
                 "category":  category,
                 "tags":      label or "-",
                 "added_on":  int(created) if created else 0,

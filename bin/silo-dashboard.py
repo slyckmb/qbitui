@@ -3710,7 +3710,8 @@ def main() -> int:
             # Update selection state
             selected_row_all = None
             if selection_hash:
-                selected_row_all = next((r for r in cached_rows if r.get("hash") == selection_hash), None)
+                _active_rows = rt_cached_rows if active_client == "rtorrent" else cached_rows
+                selected_row_all = next((r for r in _active_rows if r.get("hash") == selection_hash), None)
                 if not selected_row_all:
                     selection_hash = selection_name = None
                     in_tab_view = False
