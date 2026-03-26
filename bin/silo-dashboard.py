@@ -44,8 +44,8 @@ except ImportError:
     _RT_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.0.0"
-LAST_UPDATED = "2026-03-16"
+VERSION = "2.1.0"
+LAST_UPDATED = "2026-03-26"
 FULL_TUI_MIN_WIDTH = 120
 
 # ============================================================================
