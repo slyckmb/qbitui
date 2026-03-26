@@ -2914,7 +2914,13 @@ def main() -> int:
     if args.mediainfo_cache_dir:
         CACHE_DIR = args.mediainfo_cache_dir.expanduser()
 
-    config_path = Path(args.config) if args.config else (Path(__file__).parent.parent / "config" / "request-cache.yml")
+    _repo_root = Path(__file__).parent.parent
+    if args.config:
+        config_path = Path(args.config)
+    elif (_repo_root / "config" / "silo.yml").exists():
+        config_path = _repo_root / "config" / "silo.yml"
+    else:
+        config_path = _repo_root / "config" / "request-cache.yml"  # legacy fallback
     cfg_api_url, cfg_creds = read_qbit_config(config_path)
     api_url = os.environ.get("QBITTORRENT_API_URL") or cfg_api_url or "http://localhost:9003"
     creds_file = os.environ.get("QBITTORRENT_CREDENTIALS_FILE") or cfg_creds or "/mnt/config/secrets/qbittorrent/api.env"
