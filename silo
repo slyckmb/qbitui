@@ -14,9 +14,11 @@ from pathlib import Path
 # Canonical paths to dashboards
 BIN_DIR = Path(__file__).parent.resolve() / "bin"
 DASHBOARDS = {
-    "qbit": BIN_DIR / "silo-dashboard.py",
-    "sab": BIN_DIR / "silo-sabnzbd.py",
-    "sabnzbd": BIN_DIR / "silo-sabnzbd.py",
+    "qbit":     BIN_DIR / "silo-dashboard.py",
+    "rt":       BIN_DIR / "silo-dashboard.py",   # rTorrent: launches dashboard, press \ to switch
+    "rtorrent": BIN_DIR / "silo-dashboard.py",
+    "sab":      BIN_DIR / "silo-sabnzbd.py",
+    "sabnzbd":  BIN_DIR / "silo-sabnzbd.py",
 }
 
 

@@ -1,0 +1,43 @@
+# silo.yml — Downloader Dashboard Configuration
+# Copy this file to config/silo.yml (or set SILO_CONFIG_FILE env var).
+# Only populate the sections you actually use.
+
+downloaders:
+
+  qbittorrent:
+    # HTTP API endpoint for qBittorrent WebUI
+    api_url: "http://localhost:9003"
+    # Path to a file containing:
+    #   QBITTORRENTAPI_USERNAME=<user>
+    #   QBITTORRENT_PASSWORD=<pass>
+    credentials_file: "/mnt/config/secrets/qbittorrent/api.env"
+
+  rtorrent:
+    # HTTP XMLRPC endpoint exposed by rTorrent via an HTTP proxy.
+    #
+    # rTorrent speaks SCGI natively — expose it over HTTP with nginx/lighttpd:
+    #
+    #   nginx example (add to a server {} block):
+    #     location /RPC2 {
+    #         include scgi_params;
+    #         scgi_pass unix:/run/rtorrent/rtorrent.sock;
+    #         # or: scgi_pass 127.0.0.1:5000;
+    #     }
+    #
+    # Common setups:
+    #   ruTorrent:    http://localhost:8080/RPC2
+    #   rtorrent-ps:  http://localhost:8080/RPC2
+    xmlrpc_url: "http://localhost:8080/RPC2"
+    # Optional: HTTP Basic Auth credentials if your proxy requires them
+    # username: ""
+    # password: ""
+
+  sabnzbd:
+    # SABnzbd is configured via environment variables:
+    #   SABNZBD_API_URL=http://localhost:8080/sabnzbd
+    #   SABNZBD_API_KEY=<your-api-key>
+    # No entries needed here currently.
+
+# ── Hotkey reference ──────────────────────────────────────────────────────────
+#   \   (backslash)   Switch active client: qBittorrent ↔ rTorrent
+#   ?                 Show full help / keymap inside the TUI

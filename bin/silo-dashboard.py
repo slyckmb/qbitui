@@ -35,6 +35,14 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
+# Optional rTorrent client module — degrades gracefully if missing
+try:
+    import silo_client_rt as _rt_client
+    _RT_AVAILABLE = True
+except ImportError:
+    _rt_client = None  # type: ignore
+    _RT_AVAILABLE = False
+
 SCRIPT_NAME = "silo-dashboard"
 VERSION = "2.0.0"
 LAST_UPDATED = "2026-03-16"
@@ -420,6 +428,19 @@ def read_qbit_config(path: Path) -> tuple[str, str]:
         if in_downloaders and in_qbit and line.strip().startswith("credentials_file:"):
             creds = line.split("credentials_file:", 1)[1].strip()
     return api_url, creds
+
+
+def _read_rt_config(path: Path) -> str:
+    """Return rtorrent.xmlrpc_url from silo.yml, or RTORRENT_XMLRPC_URL env var."""
+    try:
+        if path.exists() and yaml is not None:
+            data = yaml.safe_load(path.read_text()) or {}
+            url = (data.get("downloaders") or {}).get("rtorrent", {}).get("xmlrpc_url", "")
+            if url:
+                return url
+    except Exception:
+        pass
+    return os.environ.get("RTORRENT_XMLRPC_URL", "")
 
 
 def read_credentials(path: Path) -> tuple[str, str]:
@@ -2957,6 +2978,14 @@ def main() -> int:
     banner_until = 0.0
     last_banner_time = 0.0
 
+    # ── Multi-client state ────────────────────────────────────────────────────
+    active_client = "qbit"       # "qbit" | "rtorrent"
+    rt_url = _read_rt_config(config_path)
+    rt_cached_rows: list[dict] = []
+    rt_cached_torrents: list[dict] = []
+    rt_cache_time = 0.0
+    rt_fetch_interval = 5.0
+
     def set_banner(message: str, duration: float = 2.0, min_interval: float = 0.6) -> None:
         nonlocal banner_text, banner_until, last_banner_time
         now = time.time()
@@ -3615,9 +3644,23 @@ def main() -> int:
                         set_banner(f"Network error: {raw}")
                     cache_time = now
 
+            # ── rTorrent fetch (direct XMLRPC, no cache daemon) ───────────────
+            if active_client == "rtorrent" and _RT_AVAILABLE and rt_url:
+                if not rt_cached_rows or (now - rt_cache_time) >= rt_fetch_interval:
+                    try:
+                        _rt_rows = _rt_client.fetch(rt_url)
+                        if _rt_rows or not rt_cached_rows:
+                            rt_cached_rows = _rt_rows
+                            rt_cached_torrents = [r.get("raw", {}) for r in _rt_rows]
+                            data_changed = True
+                    except Exception:
+                        pass
+                    rt_cache_time = now
+
             # ── B: Display tier — fast direct-API refresh of visible rows ──────
             if (
-                args.use_shared_cache
+                active_client == "qbit"
+                and args.use_shared_cache
                 and args.fast_refresh_interval > 0
                 and visible_hashes
                 and (now - last_fast_refresh) >= args.fast_refresh_interval
@@ -3629,7 +3672,7 @@ def main() -> int:
                     data_changed = True
                 last_fast_refresh = now
 
-            rows_to_render = cached_rows
+            rows_to_render = rt_cached_rows if active_client == "rtorrent" else cached_rows
             if scope != "all":
                 rows_to_render = [r for r in rows_to_render if state_group(r.get("raw", {}).get("state", "")) == scope]
 
@@ -3738,11 +3781,13 @@ def main() -> int:
                     divider_line = "-" * tab_display_width
 
                     # Use new v2 header
+                    _display_url = f"[rt] {rt_url}" if active_client == "rtorrent" else api_url
+                    _display_torrents = rt_cached_torrents if active_client == "rtorrent" else cached_torrents
                     header_lines = draw_header_v2(
                         colors=colors,
-                        api_url=api_url,
+                        api_url=_display_url,
                         version=VERSION,
-                        torrents=cached_torrents,
+                        torrents=_display_torrents,
                         scope=scope,
                         sort_field=sort_fields[sort_index],
                         sort_desc=sort_desc,
@@ -3822,11 +3867,13 @@ def main() -> int:
                                 width=content_width
                             )
                         else:
+                            _display_url = f"[rt] {rt_url}" if active_client == "rtorrent" else api_url
+                            _display_torrents = rt_cached_torrents if active_client == "rtorrent" else cached_torrents
                             header_lines = draw_header_full_compact(
                                 colors=colors,
-                                api_url=api_url,
+                                api_url=_display_url,
                                 version=VERSION,
-                                torrents=cached_torrents,
+                                torrents=_display_torrents,
                                 scope=scope,
                                 sort_field=sort_fields[sort_index],
                                 sort_desc=sort_desc,
@@ -3993,6 +4040,7 @@ def main() -> int:
                     help_lines.append(f"{colors.YELLOW}Sort:{colors.RESET}        s=cycle sort field  o=toggle asc/desc")
                     help_lines.append(f"{colors.YELLOW}Filter:{colors.RESET}      f=status  c=category  #=tag  l=compound  x=pause/resume all  p=presets")
                     help_lines.append(f"{colors.YELLOW}View:{colors.RESET}        z=reset all  t=tags  d=date  h=hash  n=narrow  m=media inline  X=clear MI cache")
+                    help_lines.append(f"{colors.YELLOW}Client:{colors.RESET}      \\=switch qBit↔rTorrent")
                     help_lines.append(f"{colors.YELLOW}Global:{colors.RESET}      ?=help  i=cache status  q=quit  Ctrl-Q=quit")
                     help_lines.append(f"{colors.YELLOW}Actions:{colors.RESET}     (select a torrent first)")
                     help_lines.append(f"             P=Pause/Resume  V=Verify  C=Category  E=Tags  T=Trackers  Q=QC  D=Delete")
@@ -4508,12 +4556,36 @@ def main() -> int:
                     have_full_draw = False
                     continue
 
+                # '\': switch active client (qBit ↔ rTorrent)
+                if key == "\\":
+                    if active_client == "qbit":
+                        if _RT_AVAILABLE and rt_url:
+                            active_client = "rtorrent"
+                            rt_cached_rows = []
+                            rt_cache_time = 0.0
+                            set_banner(f"Switched to rTorrent  ({rt_url})")
+                        else:
+                            set_banner("rTorrent not configured — set rtorrent.xmlrpc_url in silo.yml")
+                    else:
+                        active_client = "qbit"
+                        set_banner("Switched to qBittorrent")
+                    have_full_draw = False
+                    continue
+
                 # Actions
                 if selection_hash and key.upper() in "PVCETQD":
                     selected_item = next((r for r in page_rows if r.get("hash") == selection_hash), None)
                     if selected_item:
                         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                        res = apply_action(opener, api_url, key.upper(), selected_item)
+                        if active_client == "rtorrent" and _RT_AVAILABLE:
+                            _rt_act = _rt_client.ACTIONS.get(key.upper())
+                            if _rt_act:
+                                _rt_proxy = _rt_client.connect(rt_url)
+                                res = _rt_act[1](_rt_proxy, selection_hash, selected_item)
+                            else:
+                                res = f"{key.upper()} not supported on rTorrent"
+                        else:
+                            res = apply_action(opener, api_url, key.upper(), selected_item)
                         set_banner(f"Action {key.upper()}: {res}")
                         tty.setraw(fd); have_full_draw = False; continue
 
