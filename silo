@@ -8,38 +8,55 @@ to switch between qBittorrent, SABnzbd, and (future) rTorrent views.
 
 import os
 import sys
-import subprocess
 from pathlib import Path
 
-# Canonical paths to dashboards
 BIN_DIR = Path(__file__).parent.resolve() / "bin"
-DASHBOARDS = {
-    "qbit":     BIN_DIR / "silo-dashboard.py",
-    "rt":       BIN_DIR / "silo-dashboard.py",   # rTorrent: launches dashboard, press \ to switch
-    "rtorrent": BIN_DIR / "silo-dashboard.py",
-    "sab":      BIN_DIR / "silo-sabnzbd.py",
-    "sabnzbd":  BIN_DIR / "silo-sabnzbd.py",
-}
+
+# Subcommand → script, description (shown in --help / --list)
+_COMMANDS: list[tuple[str, Path, str]] = [
+    ("qbit",    BIN_DIR / "silo-dashboard.py",  "qBittorrent dashboard (default)"),
+    ("rt",      BIN_DIR / "silo-dashboard.py",  "rTorrent dashboard (press \\ inside to switch)"),
+    ("rtorrent",BIN_DIR / "silo-dashboard.py",  "rTorrent dashboard (alias for rt)"),
+    ("sab",     BIN_DIR / "silo-sabnzbd.py",    "SABnzbd dashboard"),
+    ("sabnzbd", BIN_DIR / "silo-sabnzbd.py",    "SABnzbd dashboard (alias for sab)"),
+]
+DASHBOARDS = {cmd: path for cmd, path, _ in _COMMANDS}
+
+
+def _print_help() -> None:
+    print("Usage: silo [subcommand] [options]")
+    print()
+    print("Subcommands:")
+    seen: set[str] = set()
+    for cmd, _, desc in _COMMANDS:
+        print(f"  {cmd:<12} {desc}")
+    print()
+    print("With no subcommand, 'qbit' is used by default.")
+    print("Pass --help after a subcommand to see its options.")
 
 
 def main():
     argv = sys.argv[1:]
-    
+
+    if argv and argv[0] in ("-h", "--help") and len(argv) == 1:
+        _print_help()
+        sys.exit(0)
+
+    if argv and argv[0] == "--list":
+        for cmd, _, _ in _COMMANDS:
+            print(cmd)
+        sys.exit(0)
+
     # Default to qbit if no subcommand is provided
     subcommand = "qbit"
     if argv and argv[0] in DASHBOARDS:
         subcommand = argv[0]
         argv = argv[1:]
-    elif argv and (argv[0].startswith("-") or argv[0].startswith("--")):
-        # If it's a flag, pass it to the default qbit dashboard
+    elif argv and argv[0].startswith("-"):
         subcommand = "qbit"
     elif argv:
-        # Unknown subcommand, print help
-        print(f"Usage: silo [subcommand] [options]")
-        print("\nAvailable subcommands:")
-        for cmd in sorted(DASHBOARDS.keys()):
-            print(f"  {cmd}")
-        print("\nIf no subcommand is provided, 'qbit' is used by default.")
+        print(f"silo: unknown subcommand '{argv[0]}'", file=sys.stderr)
+        print("Run 'silo --help' for usage.", file=sys.stderr)
         sys.exit(1)
 
     script_path = DASHBOARDS[subcommand]
