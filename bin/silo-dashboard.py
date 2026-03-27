@@ -43,6 +43,14 @@ except ImportError:
     _rt_client = None  # type: ignore
     _RT_AVAILABLE = False
 
+# Optional cache infrastructure (silo_cache_common.py in same directory)
+try:
+    import silo_cache_common as _cc
+    _CC_AVAILABLE = True
+except ImportError:
+    _cc = None  # type: ignore
+    _CC_AVAILABLE = False
+
 SCRIPT_NAME = "silo-dashboard"
 VERSION = "2.1.0"
 LAST_UPDATED = "2026-03-26"
@@ -2992,6 +3000,20 @@ def main() -> int:
     rt_cache_time = 0.0
     rt_fetch_interval = 5.0
 
+    # rTorrent cache daemon paths (written by silo-rt-cache-daemon.py)
+    _rt_cache_base    = Path.home() / ".cache" / "silo-rt"
+    _rt_cache_file    = _rt_cache_base / "torrents.json"
+    _rt_meta_file     = _rt_cache_base / "torrents.meta.json"
+    _rt_lease_dir     = _rt_cache_base / "leases"
+    _rt_pid_file      = _rt_cache_base / "daemon.pid"
+    _rt_lock_file     = _rt_cache_base / "daemon.lock"
+    _rt_log_file      = _rt_cache_base / "daemon.log"
+    _rt_daemon_script = Path(__file__).parent / "silo-rt-cache-daemon.py"
+    _rt_cache_max_age = 10.0          # treat cache stale after this many seconds
+    _rt_daemon_ping_interval = 15.0   # how often to re-ping ensure_daemon
+    _rt_last_daemon_ping = 0.0
+    _rt_cache_mtime = 0.0             # mtime of last successfully read cache file
+
     def set_banner(message: str, duration: float = 2.0, min_interval: float = 0.6) -> None:
         nonlocal banner_text, banner_until, last_banner_time
         now = time.time()
@@ -3650,18 +3672,67 @@ def main() -> int:
                         set_banner(f"Network error: {raw}")
                     cache_time = now
 
-            # ── rTorrent fetch (direct XMLRPC, no cache daemon) ───────────────
+            # ── rTorrent fetch (cache-first, direct XMLRPC fallback) ──────────
             if active_client == "rtorrent" and _RT_AVAILABLE and rt_url:
-                if not rt_cached_rows or (now - rt_cache_time) >= rt_fetch_interval:
+                # Ensure the cache daemon is running (fire-and-forget ping)
+                if _CC_AVAILABLE and _rt_daemon_script.exists():
+                    if (now - _rt_last_daemon_ping) >= _rt_daemon_ping_interval:
+                        _cc.ensure_daemon(
+                            daemon_script=_rt_daemon_script,
+                            cache_file=_rt_cache_file,
+                            meta_file=_rt_meta_file,
+                            lease_dir=_rt_lease_dir,
+                            pid_file=_rt_pid_file,
+                            lock_file=_rt_lock_file,
+                            log_file=_rt_log_file,
+                            extra_args=["--xmlrpc-url", rt_url] if rt_url else None,
+                            default_interval=5.0,
+                            min_interval=3.0,
+                            max_interval=30.0,
+                            idle_grace=120.0,
+                        )
+                        # Write a lease so the daemon knows we're active
+                        try:
+                            _cc.write_lease(
+                                lease_dir=_rt_lease_dir,
+                                client_id="silo-dashboard",
+                                requested_interval_s=rt_fetch_interval,
+                                lease_ttl_s=45.0,
+                            )
+                        except Exception:
+                            pass
+                        _rt_last_daemon_ping = now
+
+                # Try reading from cache file (mtime-guarded)
+                _loaded_from_cache = False
+                if _rt_cache_file.exists():
                     try:
-                        _rt_rows = _rt_client.fetch(rt_url)
-                        if _rt_rows or not rt_cached_rows:
-                            rt_cached_rows = _rt_rows
-                            rt_cached_torrents = [r.get("raw", {}) for r in _rt_rows]
-                            data_changed = True
+                        _cf_mtime = _rt_cache_file.stat().st_mtime
+                        _cf_age = now - _cf_mtime
+                        if _cf_mtime != _rt_cache_mtime and _cf_age <= _rt_cache_max_age:
+                            _rt_rows = json.loads(_rt_cache_file.read_text(encoding="utf-8"))
+                            if _rt_rows or not rt_cached_rows:
+                                rt_cached_rows = _rt_rows
+                                rt_cached_torrents = [r.get("raw", {}) for r in _rt_rows]
+                                data_changed = True
+                            _rt_cache_mtime = _cf_mtime
+                            rt_cache_time = now
+                            _loaded_from_cache = True
                     except Exception:
                         pass
-                    rt_cache_time = now
+
+                # Fall back to direct XMLRPC if cache is absent or too stale
+                if not _loaded_from_cache:
+                    if not rt_cached_rows or (now - rt_cache_time) >= rt_fetch_interval:
+                        try:
+                            _rt_rows = _rt_client.fetch(rt_url)
+                            if _rt_rows or not rt_cached_rows:
+                                rt_cached_rows = _rt_rows
+                                rt_cached_torrents = [r.get("raw", {}) for r in _rt_rows]
+                                data_changed = True
+                        except Exception:
+                            pass
+                        rt_cache_time = now
 
             # ── B: Display tier — fast direct-API refresh of visible rows ──────
             if (
