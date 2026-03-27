@@ -110,18 +110,40 @@ def read_api_url_from_config(path: Path) -> str:
     return api_url
 
 
+_SAB_LAST_ERROR = ""   # module-level so main loop can display it
+
+
 def sab_api_request(api_url: str, api_key: str, params: dict, timeout: int = 10) -> dict:
+    global _SAB_LAST_ERROR
     url = f"{api_url}?{urllib.parse.urlencode({**params, 'apikey': api_key, 'output': 'json'})}"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace")
-    except Exception:
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        is_reset = isinstance(reason, OSError) and getattr(reason, "errno", None) == 104
+        if is_reset:
+            _SAB_LAST_ERROR = "Connection reset by peer (errno 104)"
+        elif isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+            _SAB_LAST_ERROR = "Request timed out"
+        else:
+            _SAB_LAST_ERROR = f"Network error: {reason}"
+        return {}
+    except OSError as exc:
+        _SAB_LAST_ERROR = f"OS error: {exc}"
+        return {}
+    except Exception as exc:
+        _SAB_LAST_ERROR = f"Unexpected error: {exc}"
         return {}
     if body.strip().startswith("<!DOCTYPE") or body.strip().startswith("<html"):
+        _SAB_LAST_ERROR = "Got HTML instead of JSON (check API URL / key)"
         return {}
     try:
-        return json.loads(body)
+        data = json.loads(body)
+        _SAB_LAST_ERROR = ""   # clear on success
+        return data
     except json.JSONDecodeError:
+        _SAB_LAST_ERROR = f"Invalid JSON response ({len(body)} bytes)"
         return {}
 
 
@@ -371,6 +393,8 @@ def main() -> int:
         os.system("clear")
         print(f"{COLOR_BOLD}SABNZBD DASHBOARD (TUI){COLOR_RESET}")
         print(f"API: {api_url}")
+        if _SAB_LAST_ERROR:
+            print(f"{COLOR_RED}Error: {_SAB_LAST_ERROR}{COLOR_RESET}")
         print(f"Summary: {summarize(queue, history)}")
         print("")
 
