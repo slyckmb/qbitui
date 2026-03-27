@@ -3089,6 +3089,11 @@ def main() -> int:
     cached_rows: list[dict] = []
     cache_time = 0.0
     fetch_interval = 2.0  # only used in direct-API (non-shared-cache) mode
+
+    # ── qBit connection recovery state ────────────────────────────────────────
+    qbit_conn_failures  = 0        # consecutive fetch failures
+    qbit_last_reconnect = 0.0      # wall time of last reconnect attempt
+    _RECONNECT_BACKOFFS = [2.0, 5.0, 15.0]  # seconds between attempts
     # Cache hit tracking (this session)
     cache_hit_count = 0    # requests served from shared cache daemon
     direct_hit_count = 0   # requests served directly from qbit API
@@ -3655,11 +3660,16 @@ def main() -> int:
                     cache_time = now
 
             else:
-                # Direct-API mode — original behavior
+                # Direct-API mode — with connection recovery
                 if not cached_rows or (now - cache_time) >= fetch_interval:
-                    cache_env = {**os.environ, "QBIT_URL": api_url, "QBIT_USER": username, "QBIT_PASS": password}
                     raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/info")
+                    _is_auth_err = raw and (raw.startswith("HTTP 403") or raw.startswith("HTTP 401") or "Forbidden" in raw or "Unauthorized" in raw)
+                    _is_conn_err = raw and raw.startswith("Error:")
                     if raw and not (raw.startswith("Error:") or raw.startswith("HTTP ")):
+                        # Success — reset failure counter
+                        if qbit_conn_failures > 0:
+                            set_banner("Reconnected to qBittorrent")
+                        qbit_conn_failures = 0
                         try:
                             torrents = json.loads(raw)
                             rows = build_rows(torrents, tracker_keyword_map, tracker_url_pattern_map)
@@ -3669,6 +3679,19 @@ def main() -> int:
                             data_changed = True
                         except json.JSONDecodeError:
                             set_banner("Error: Invalid JSON response")
+                    elif _is_auth_err or _is_conn_err:
+                        qbit_conn_failures += 1
+                        _backoff = _RECONNECT_BACKOFFS[min(qbit_conn_failures - 1, len(_RECONNECT_BACKOFFS) - 1)]
+                        if (now - qbit_last_reconnect) >= _backoff:
+                            qbit_last_reconnect = now
+                            set_banner(f"Connection lost — reconnecting... (attempt {qbit_conn_failures})", duration=_backoff)
+                            _reconnected = check_auth_bypass(opener, api_url) or qbit_login(opener, api_url, username, password)
+                            if _reconnected:
+                                qbit_conn_failures = 0
+                                set_banner("Reconnected to qBittorrent")
+                        else:
+                            _wait = max(0, _backoff - (now - qbit_last_reconnect))
+                            set_banner(f"qBittorrent unreachable — retry in {_wait:.0f}s", duration=1.0)
                     elif raw:
                         set_banner(f"Network error: {raw}")
                     cache_time = now
