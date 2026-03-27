@@ -1227,12 +1227,13 @@ def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
         else f"  {colors.FG_TERTIARY}fast=off{colors.RESET}"
     )
     no_daemon_str = f"  {colors.FG_TERTIARY}[no-daemon]{colors.RESET}" if cache_info.get("no_daemon") else ""
+    client_label = cache_info.get("client_label", "qbit")
     return (
         f"{colors.FG_SECONDARY}Cache:{colors.RESET} {dot} {colors.FG_TERTIARY}{path_short}{colors.RESET}"
         f"  {colors.FG_SECONDARY}bulk={colors.YELLOW}{interval_str}{colors.RESET}"
         f"{fast_str}"
         f"  {colors.FG_SECONDARY}↑cache {colors.CYAN}{hits}{colors.RESET}"
-        f"  {colors.FG_SECONDARY}↓qbit {colors.BLUE}{direct}{colors.RESET}"
+        f"  {colors.FG_SECONDARY}↓{client_label} {colors.BLUE}{direct}{colors.RESET}"
         f"  {colors.FG_SECONDARY}hit {colors.GREEN}{hit_pct}{colors.RESET}"
         f"  {colors.FG_TERTIARY}{age_str}{colors.RESET}"
         f"{items_str}{leases_str}{qb_profile_str}{no_daemon_str}{err_str}"
@@ -3802,33 +3803,67 @@ def main() -> int:
                 need_redraw = True
                 NEED_RESIZE = False
 
-            # Build cache_info for header display
+            # Build cache_info for header display — switches on active_client
             _now_wall = time.time()
-            _fetched_at = cache_meta.get("fetched_at")
-            _cache_age: float | None = None
-            if _fetched_at is not None:
-                try:
-                    _cache_age = max(0.0, _now_wall - float(_fetched_at))
-                except Exception:
-                    pass
-            _pid_val = cache_meta.get("daemon_pid")
-            _daemon_alive = bool(_pid_val and cache_meta.get("source") not in ("daemon_idle_exit",))
-            _total_hits = cache_hit_count + direct_hit_count
-            cache_info = {
-                "enabled": args.use_shared_cache,
-                "base_path": str(_cache_base),
-                "interval_s": cache_meta.get("effective_interval_s"),
-                "cache_hits": cache_hit_count,
-                "direct_hits": direct_hit_count,
-                "daemon_running": _daemon_alive,
-                "cache_age_s": _cache_age,
-                "items": cache_meta.get("items"),
-                "last_error": cache_meta.get("last_error", ""),
-                "active_leases": cache_meta.get("active_leases", 0),
-                "qb_profile": cache_meta.get("qb_profile") or {},
-                "fast_refresh_interval": args.fast_refresh_interval,
-                "no_daemon": args.cache_no_daemon,
-            }
+            if active_client == "rtorrent":
+                # Read rTorrent cache meta (written by silo-rt-cache-daemon)
+                _rt_meta = {}
+                if _CC_AVAILABLE:
+                    try:
+                        _rt_meta = json.loads(_rt_meta_file.read_text(encoding="utf-8")) if _rt_meta_file.exists() else {}
+                    except Exception:
+                        pass
+                _rt_fetched = _rt_meta.get("fetched_at")
+                _rt_age: float | None = None
+                if _rt_fetched is not None:
+                    try:
+                        _rt_age = max(0.0, _now_wall - float(_rt_fetched))
+                    except Exception:
+                        pass
+                _rt_pid = _rt_meta.get("daemon_pid")
+                _rt_alive = bool(_rt_pid and _cc.daemon_running(_rt_pid_file) if _CC_AVAILABLE else False)
+                cache_info = {
+                    "enabled": _CC_AVAILABLE and _rt_daemon_script.exists(),
+                    "base_path": str(_rt_cache_base),
+                    "interval_s": _rt_meta.get("effective_interval_s"),
+                    "cache_hits": 0,        # rt: all served from cache file
+                    "direct_hits": 0,
+                    "daemon_running": _rt_alive,
+                    "cache_age_s": _rt_age,
+                    "items": _rt_meta.get("items"),
+                    "last_error": _rt_meta.get("last_error", ""),
+                    "active_leases": _rt_meta.get("active_leases", 0),
+                    "qb_profile": {},       # no qBit profile for rTorrent
+                    "fast_refresh_interval": 0,
+                    "no_daemon": False,
+                    "client_label": "rt",
+                }
+            else:
+                _fetched_at = cache_meta.get("fetched_at")
+                _cache_age: float | None = None
+                if _fetched_at is not None:
+                    try:
+                        _cache_age = max(0.0, _now_wall - float(_fetched_at))
+                    except Exception:
+                        pass
+                _pid_val = cache_meta.get("daemon_pid")
+                _daemon_alive = bool(_pid_val and cache_meta.get("source") not in ("daemon_idle_exit",))
+                cache_info = {
+                    "enabled": args.use_shared_cache,
+                    "base_path": str(_cache_base),
+                    "interval_s": cache_meta.get("effective_interval_s"),
+                    "cache_hits": cache_hit_count,
+                    "direct_hits": direct_hit_count,
+                    "daemon_running": _daemon_alive,
+                    "cache_age_s": _cache_age,
+                    "items": cache_meta.get("items"),
+                    "last_error": cache_meta.get("last_error", ""),
+                    "active_leases": cache_meta.get("active_leases", 0),
+                    "qb_profile": cache_meta.get("qb_profile") or {},
+                    "fast_refresh_interval": args.fast_refresh_interval,
+                    "no_daemon": args.cache_no_daemon,
+                    "client_label": "qbit",
+                }
 
             if data_changed or need_redraw:
                 term_w = current_term_w
