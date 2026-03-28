@@ -3,7 +3,7 @@
 silo: Unified Downloader Dashboard Dispatcher.
 
 This shim acts as the primary entry point for the silo suite, allowing users
-to switch between qBittorrent, SABnzbd, and (future) rTorrent views.
+to switch between rTorrent, qBittorrent, SABnzbd, and other views.
 """
 
 import os
@@ -12,26 +12,25 @@ from pathlib import Path
 
 BIN_DIR = Path(__file__).parent.resolve() / "bin"
 
-# Subcommand → script, description (shown in --help / --list)
-_COMMANDS: list[tuple[str, Path, str]] = [
-    ("qbit",    BIN_DIR / "silo-dashboard.py",  "qBittorrent dashboard (default)"),
-    ("rt",      BIN_DIR / "silo-dashboard.py",  "rTorrent dashboard (press \\ inside to switch)"),
-    ("rtorrent",BIN_DIR / "silo-dashboard.py",  "rTorrent dashboard (alias for rt)"),
-    ("sab",     BIN_DIR / "silo-sabnzbd.py",    "SABnzbd dashboard"),
-    ("sabnzbd", BIN_DIR / "silo-sabnzbd.py",    "SABnzbd dashboard (alias for sab)"),
+# Subcommand → (script, --client arg, description)
+_COMMANDS: list[tuple[str, Path, str, str]] = [
+    ("rt",       BIN_DIR / "silo-dashboard.py",  "rtorrent",  "rTorrent dashboard (default)"),
+    ("rtorrent", BIN_DIR / "silo-dashboard.py",  "rtorrent",  "rTorrent dashboard (alias for rt)"),
+    ("qbit",     BIN_DIR / "silo-dashboard.py",  "qbit",      "qBittorrent dashboard"),
+    ("sab",      BIN_DIR / "silo-sabnzbd.py",    "",          "SABnzbd dashboard"),
+    ("sabnzbd",  BIN_DIR / "silo-sabnzbd.py",    "",          "SABnzbd dashboard (alias for sab)"),
 ]
-DASHBOARDS = {cmd: path for cmd, path, _ in _COMMANDS}
+DASHBOARDS = {cmd: (path, client) for cmd, path, client, _ in _COMMANDS}
 
 
 def _print_help() -> None:
     print("Usage: silo [subcommand] [options]")
     print()
     print("Subcommands:")
-    seen: set[str] = set()
-    for cmd, _, desc in _COMMANDS:
+    for cmd, _, _, desc in _COMMANDS:
         print(f"  {cmd:<12} {desc}")
     print()
-    print("With no subcommand, 'qbit' is used by default.")
+    print("With no subcommand, 'rt' is used by default.")
     print("Pass --help after a subcommand to see its options.")
 
 
@@ -43,26 +42,30 @@ def main():
         sys.exit(0)
 
     if argv and argv[0] == "--list":
-        for cmd, _, _ in _COMMANDS:
+        for cmd, _, _, _ in _COMMANDS:
             print(cmd)
         sys.exit(0)
 
-    # Default to qbit if no subcommand is provided
-    subcommand = "qbit"
+    # Default to rt if no subcommand is provided
+    subcommand = "rt"
     if argv and argv[0] in DASHBOARDS:
         subcommand = argv[0]
         argv = argv[1:]
     elif argv and argv[0].startswith("-"):
-        subcommand = "qbit"
+        subcommand = "rt"
     elif argv:
         print(f"silo: unknown subcommand '{argv[0]}'", file=sys.stderr)
         print("Run 'silo --help' for usage.", file=sys.stderr)
         sys.exit(1)
 
-    script_path = DASHBOARDS[subcommand]
+    script_path, client_arg = DASHBOARDS[subcommand]
     if not script_path.exists():
         print(f"ERROR: Dashboard script not found: {script_path}", file=sys.stderr)
         sys.exit(1)
+
+    # Prepend --client <name> for dashboards that support it
+    if client_arg:
+        argv = ["--client", client_arg, *argv]
 
     # Use os.execve to replace the current process with the target dashboard
     env = os.environ.copy()

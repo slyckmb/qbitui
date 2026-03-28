@@ -2948,6 +2948,9 @@ def main() -> int:
     parser.add_argument("--daemon-ping-interval", type=float, default=5.0, metavar="SECS",
                         help="How often to re-ping the daemon while cache remains stale (default: 5).")
     parser.add_argument("--mediainfo-cache-dir", type=Path, default=None, help="Override mediainfo cache directory (default: ~/.logs/media_qc/cache/mediainfo, or QBIT_MEDIAINFO_CACHE_DIR env).")
+    parser.add_argument("--client", default=os.environ.get("SILO_DEFAULT_CLIENT", "qbit"),
+                        choices=["qbit", "rtorrent", "sabnzbd"],
+                        help="Initial active client (default: qbit, or SILO_DEFAULT_CLIENT env).")
     args = parser.parse_args()
 
     # Initialize global color scheme
@@ -2974,8 +2977,10 @@ def main() -> int:
     if not username or not password:
         username, password = read_credentials(Path(creds_file))
     if not username or not password:
-        print("ERROR: QBITTORRENT credentials not found (set env or credentials file)", file=sys.stderr)
-        return 1
+        if args.client == "qbit":
+            print("ERROR: QBITTORRENT credentials not found (set env or credentials file)", file=sys.stderr)
+            return 1
+        # For non-qBit initial clients, credentials missing is non-fatal; qBit switch will warn later
 
     # --cache-status: delegate to cache agent and exit (no curses required)
     if args.cache_status:
@@ -2991,13 +2996,13 @@ def main() -> int:
         return result.returncode
 
     opener = make_opener()
-    # Try optimistic auth bypass (e.g. localhost whitelist) to avoid triggering bans
-    if check_auth_bypass(opener, api_url):
-        # Authenticated via whitelist/cookie
-        pass
-    elif not qbit_login(opener, api_url, username, password):
-        print("ERROR: qBittorrent login failed", file=sys.stderr)
-        return 1
+    # Try optimistic auth bypass (e.g. localhost whitelist) to avoid triggering bans.
+    # Only required when starting with qBit; for other clients this is deferred to first use.
+    if args.client == "qbit":
+        if not check_auth_bypass(opener, api_url):
+            if not qbit_login(opener, api_url, username, password):
+                # qBit unreachable at startup — soft fail: TUI will show error/retry in main loop
+                pass  # reconnect logic in the fetch loop will handle this
 
     scope = "all"
     page = 0
@@ -3029,7 +3034,7 @@ def main() -> int:
     last_banner_time = 0.0
 
     # ── Multi-client state ────────────────────────────────────────────────────
-    active_client = "qbit"       # "qbit" | "rtorrent" | "sabnzbd"
+    active_client = args.client  # "qbit" | "rtorrent" | "sabnzbd" — set via --client
     rt_url = _read_rt_config(config_path)
     rt_cached_rows: list[dict] = []
     rt_cached_torrents: list[dict] = []
