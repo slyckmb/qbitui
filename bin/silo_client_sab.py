@@ -13,8 +13,10 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-NAME = "SABnzbd"
-KEY  = "sabnzbd"
+NAME         = "SABnzbd"
+KEY          = "sabnzbd"
+VERSION      = "1.0.0"
+LAST_UPDATED = "2026-03-28"
 
 last_error: str = ""   # cleared on success; callers may display it
 

@@ -20,8 +20,8 @@ except Exception:  # pragma: no cover - optional dependency
 import silo_client_sab as _client
 
 SCRIPT_NAME = "sabnzbd-dashboard"
-VERSION = "1.1.0"
-LAST_UPDATED = "2026-01-21"
+VERSION = "1.2.0"
+LAST_UPDATED = "2026-03-28"
 
 COLOR_CYAN = "\033[36m"
 COLOR_GREEN = "\033[32m"
