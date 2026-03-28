@@ -11,15 +11,14 @@ import readline  # Enables line editing for input()
 import termios
 import time
 import tty
-import urllib.parse
-import urllib.request
-from datetime import datetime, timezone
 from pathlib import Path
 
 try:
     import yaml  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     yaml = None
+
+import silo_client_sab as _client
 
 SCRIPT_NAME = "sabnzbd-dashboard"
 VERSION = "1.1.0"
@@ -110,92 +109,13 @@ def read_api_url_from_config(path: Path) -> str:
     return api_url
 
 
-_SAB_LAST_ERROR = ""   # module-level so main loop can display it
-
-
-def sab_api_request(api_url: str, api_key: str, params: dict, timeout: int = 10) -> dict:
-    global _SAB_LAST_ERROR
-    url = f"{api_url}?{urllib.parse.urlencode({**params, 'apikey': api_key, 'output': 'json'})}"
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", exc)
-        is_reset = isinstance(reason, OSError) and getattr(reason, "errno", None) == 104
-        if is_reset:
-            _SAB_LAST_ERROR = "Connection reset by peer (errno 104)"
-        elif isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
-            _SAB_LAST_ERROR = "Request timed out"
-        else:
-            _SAB_LAST_ERROR = f"Network error: {reason}"
-        return {}
-    except OSError as exc:
-        _SAB_LAST_ERROR = f"OS error: {exc}"
-        return {}
-    except Exception as exc:
-        _SAB_LAST_ERROR = f"Unexpected error: {exc}"
-        return {}
-    if body.strip().startswith("<!DOCTYPE") or body.strip().startswith("<html"):
-        _SAB_LAST_ERROR = "Got HTML instead of JSON (check API URL / key)"
-        return {}
-    try:
-        data = json.loads(body)
-        _SAB_LAST_ERROR = ""   # clear on success
-        return data
-    except json.JSONDecodeError:
-        _SAB_LAST_ERROR = f"Invalid JSON response ({len(body)} bytes)"
-        return {}
-
-
+# Delegates to silo_client_sab — kept as shims for any external callers
 def age_str(value) -> str:
-    if not value:
-        return "n/a"
-    dt = None
-    if isinstance(value, (int, float)):
-        dt = datetime.fromtimestamp(value, timezone.utc)
-    else:
-        try:
-            dt = datetime.fromtimestamp(int(value), timezone.utc)
-        except Exception:
-            try:
-                dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-            except Exception:
-                dt = None
-    if not dt:
-        return "n/a"
-    now = datetime.now(timezone.utc)
-    delta = now - dt
-    minutes = int(delta.total_seconds() // 60)
-    if minutes < 60:
-        return f"{minutes}m"
-    hours = minutes // 60
-    if hours < 48:
-        return f"{hours}h"
-    days = hours // 24
-    return f"{days}d"
+    return _client._age_str(value)
 
 
 def summarize(queue: dict, history: dict) -> str:
-    q = queue.get("queue", {}) if isinstance(queue, dict) else {}
-    status = q.get("status") or q.get("state") or "unknown"
-    speed = q.get("speed") or q.get("kbpersec") or "-"
-    size_left = q.get("sizeleft") or q.get("mbleft") or "-"
-    time_left = q.get("timeleft") or q.get("time_left") or q.get("eta") or "-"
-    slot_count = q.get("noofslots") or len(q.get("slots") or [])
-
-    h = history.get("history", {}) if isinstance(history, dict) else {}
-    slots = h.get("slots") or []
-    hist_counts = {}
-    for slot in slots:
-        s = str(slot.get("status") or "unknown").lower()
-        hist_counts[s] = hist_counts.get(s, 0) + 1
-
-    summary = f"queue:{slot_count} status:{status} speed:{speed} left:{size_left} eta:{time_left}"
-    if slots:
-        total_hist = sum(hist_counts.values())
-        failed = hist_counts.get("failed", 0) + hist_counts.get("fail", 0)
-        summary += f" history:{total_hist} failed:{failed}"
-    return summary
+    return _client.summarize(queue, history)
 
 
 def normalize_status(value: str) -> str:
@@ -218,51 +138,10 @@ def status_color(status: str) -> str:
 
 
 def build_rows(queue: dict, history: dict) -> list:
-    rows = []
-    q = queue.get("queue", {}) if isinstance(queue, dict) else {}
-    for slot in q.get("slots") or []:
-        name = slot.get("filename") or slot.get("name") or ""
-        status = normalize_status(slot.get("status"))
-        percent = slot.get("percentage") or slot.get("percent") or ""
-        if percent and isinstance(percent, (int, float)):
-            percent = f"{int(percent)}%"
-        elif percent and isinstance(percent, str) and not percent.endswith("%"):
-            percent = percent + "%"
-        size = slot.get("size") or slot.get("mb") or "-"
-        eta = slot.get("timeleft") or slot.get("time_left") or "-"
-        category = slot.get("cat") or slot.get("category") or "-"
-        nzo_id = slot.get("nzo_id") or slot.get("nzoid") or ""
-        rows.append({
-            "source": "Q",
-            "status": status,
-            "name": name,
-            "progress": percent or "-",
-            "size": size,
-            "eta_age": eta or "-",
-            "category": category,
-            "id": nzo_id,
-            "raw": slot,
-        })
-
-    h = history.get("history", {}) if isinstance(history, dict) else {}
-    for slot in h.get("slots") or []:
-        name = slot.get("name") or slot.get("filename") or ""
-        status = normalize_status(slot.get("status"))
-        size = slot.get("size") or "-"
-        category = slot.get("cat") or slot.get("category") or "-"
-        nzo_id = slot.get("nzo_id") or slot.get("nzoid") or ""
-        age = age_str(slot.get("completed"))
-        rows.append({
-            "source": "H",
-            "status": status,
-            "name": name,
-            "progress": "100%",
-            "size": size,
-            "eta_age": age,
-            "category": category,
-            "id": nzo_id,
-            "raw": slot,
-        })
+    rows = _client.build_rows_native(queue, history)
+    # normalize_status applied for display consistency in this TUI
+    for row in rows:
+        row["status"] = normalize_status(row.get("status", ""))
     return rows
 
 
@@ -274,7 +153,7 @@ def format_rows(rows: list, page: int, page_size: int) -> list:
     return rows[start:end], total_pages, page
 
 
-def apply_action(api_url: str, api_key: str, mode: str, item: dict) -> str:
+def apply_action(conn: "_client.SabConn", mode: str, item: dict) -> str:
     nzo_id = item.get("id")
     source = item.get("source")
     status = (item.get("status") or "").lower()
@@ -286,31 +165,29 @@ def apply_action(api_url: str, api_key: str, mode: str, item: dict) -> str:
         if source != "Q":
             return "Pause/resume is only for queue items"
         action = "resume" if "pause" in status else "pause"
-        result = sab_api_request(api_url, api_key, {"mode": "queue", "name": action, "value": nzo_id})
-        return "OK" if result.get("status") else "Failed"
+        result = _client.request(conn, {"mode": "queue", "name": action, "value": nzo_id})
+        return "OK" if result.get("status") else (_client.last_error or "Failed")
     if mode == "d":
-        if source == "Q":
-            result = sab_api_request(api_url, api_key, {"mode": "queue", "name": "delete", "value": nzo_id})
-        else:
-            result = sab_api_request(api_url, api_key, {"mode": "history", "name": "delete", "value": nzo_id})
-        return "OK" if result.get("status") else "Failed"
+        api_mode = "history" if source == "H" else "queue"
+        result = _client.request(conn, {"mode": api_mode, "name": "delete", "value": nzo_id})
+        return "OK" if result.get("status") else (_client.last_error or "Failed")
     if mode == "c":
         print("Enter new category (blank cancels): ", end="", flush=True)
         value = input().strip()
         if not value:
             return "Cancelled"
-        result = sab_api_request(api_url, api_key, {"mode": "change_cat", "name": nzo_id, "value": value})
-        return "OK" if result.get("status") else "Failed"
+        result = _client.request(conn, {"mode": "change_cat", "name": nzo_id, "value": value})
+        return "OK" if result.get("status") else (_client.last_error or "Failed")
     if mode == "t":
         if source != "H":
             return "Retry is only for history items"
-        result = sab_api_request(api_url, api_key, {"mode": "retry", "value": nzo_id})
-        return "OK" if result.get("status") else "Failed"
+        result = _client.request(conn, {"mode": "retry", "value": nzo_id})
+        return "OK" if result.get("status") else (_client.last_error or "Failed")
     if mode == "m":
         if source != "H":
             return "Mark-complete is only for history items"
-        result = sab_api_request(api_url, api_key, {"mode": "history", "name": "mark_as_completed", "value": nzo_id})
-        return "OK" if result.get("status") else "Failed"
+        result = _client.request(conn, {"mode": "history", "name": "mark_as_completed", "value": nzo_id})
+        return "OK" if result.get("status") else (_client.last_error or "Failed")
     return "Unknown mode"
 
 
@@ -358,14 +235,13 @@ def main() -> int:
 
     config_path = Path(args.config) if args.config else (Path(__file__).parent.parent / "config" / "request-cache.yml")
     api_url = os.environ.get("SABNZBD_URL") or read_api_url_from_config(config_path) or "http://localhost:8080"
-    api_url = api_url.rstrip("/")
-    if not api_url.endswith("/api"):
-        api_url = api_url + "/api"
 
     api_key = os.environ.get("SABNZBD_API_KEY") or read_api_key(Path(os.environ.get("SABNZBD_API_KEY_FILE", "/mnt/config/secrets/sabnzbd/sabnzbd.env")))
     if not api_key:
         print("ERROR: SABNZBD_API_KEY not found (set SABNZBD_API_KEY or SABNZBD_API_KEY_FILE)", file=sys.stderr)
         return 1
+
+    conn = _client.connect(api_url, api_key)
 
     mode = "i"
     scope = "all"
@@ -373,10 +249,10 @@ def main() -> int:
     filter_term = ""
 
     while True:
-        queue = sab_api_request(api_url, api_key, {"mode": "queue"}) or {}
+        queue = _client.request(conn, {"mode": "queue"}) or {}
         history = {}
         if not args.no_history:
-            history = sab_api_request(api_url, api_key, {"mode": "history", "limit": args.history_limit}) or {}
+            history = _client.request(conn, {"mode": "history", "limit": args.history_limit}) or {}
         rows = build_rows(queue, history)
 
         if scope == "queue":
@@ -392,9 +268,9 @@ def main() -> int:
 
         os.system("clear")
         print(f"{COLOR_BOLD}SABNZBD DASHBOARD (TUI){COLOR_RESET}")
-        print(f"API: {api_url}")
-        if _SAB_LAST_ERROR:
-            print(f"{COLOR_RED}Error: {_SAB_LAST_ERROR}{COLOR_RESET}")
+        print(f"API: {conn.api_url}")
+        if _client.last_error:
+            print(f"{COLOR_RED}Error: {_client.last_error}{COLOR_RESET}")
         print(f"Summary: {summarize(queue, history)}")
         print("")
 
@@ -489,7 +365,7 @@ def main() -> int:
                         confirm = input().strip().lower()
                         if confirm != "y":
                             continue
-                    result = apply_action(api_url, api_key, mode, item)
+                    result = apply_action(conn, mode, item)
                     print(f"{mode_label}: {result}")
                     time.sleep(0.6)
             continue

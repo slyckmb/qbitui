@@ -43,6 +43,14 @@ except ImportError:
     _rt_client = None  # type: ignore
     _RT_AVAILABLE = False
 
+# Optional SABnzbd client module — degrades gracefully if missing
+try:
+    import silo_client_sab as _sab_client
+    _SAB_AVAILABLE = True
+except ImportError:
+    _sab_client = None  # type: ignore
+    _SAB_AVAILABLE = False
+
 # Optional cache infrastructure (silo_cache_common.py in same directory)
 try:
     import silo_cache_common as _cc
@@ -449,6 +457,33 @@ def _read_rt_config(path: Path) -> str:
     except Exception:
         pass
     return os.environ.get("RTORRENT_XMLRPC_URL", "")
+
+
+def _read_sab_config(path: Path) -> tuple[str, str]:
+    """Return (api_url, api_key) for SABnzbd from silo.yml / env vars."""
+    api_url = os.environ.get("SABNZBD_URL", "")
+    api_key = os.environ.get("SABNZBD_API_KEY", "")
+    try:
+        if path.exists() and yaml is not None:
+            data = yaml.safe_load(path.read_text()) or {}
+            sab = (data.get("downloaders") or {}).get("sabnzbd", {})
+            if not api_url:
+                api_url = sab.get("api_url", "")
+            if not api_key:
+                api_key = sab.get("api_key", "")
+    except Exception:
+        pass
+    # Check file-based api_key
+    if not api_key:
+        key_file = os.environ.get("SABNZBD_API_KEY_FILE", "/mnt/config/secrets/sabnzbd/sabnzbd.env")
+        try:
+            for line in Path(key_file).read_text().splitlines():
+                if line.strip().startswith("SABNZBD_API_KEY="):
+                    api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+        except Exception:
+            pass
+    return api_url or "http://localhost:8080", api_key
 
 
 def read_credentials(path: Path) -> tuple[str, str]:
@@ -2994,7 +3029,7 @@ def main() -> int:
     last_banner_time = 0.0
 
     # ── Multi-client state ────────────────────────────────────────────────────
-    active_client = "qbit"       # "qbit" | "rtorrent"
+    active_client = "qbit"       # "qbit" | "rtorrent" | "sabnzbd"
     rt_url = _read_rt_config(config_path)
     rt_cached_rows: list[dict] = []
     rt_cached_torrents: list[dict] = []
@@ -3014,6 +3049,14 @@ def main() -> int:
     _rt_daemon_ping_interval = 15.0   # how often to re-ping ensure_daemon
     _rt_last_daemon_ping = 0.0
     _rt_cache_mtime = 0.0             # mtime of last successfully read cache file
+
+    # SABnzbd state
+    _sab_url, _sab_api_key = _read_sab_config(config_path)
+    _sab_conn = _sab_client.connect(_sab_url, _sab_api_key) if _SAB_AVAILABLE else None
+    sab_cached_rows: list[dict] = []
+    sab_cached_torrents: list[dict] = []
+    sab_cache_time = 0.0
+    sab_fetch_interval = 5.0
 
     def set_banner(message: str, duration: float = 2.0, min_interval: float = 0.6) -> None:
         nonlocal banner_text, banner_until, last_banner_time
@@ -3758,6 +3801,19 @@ def main() -> int:
                             pass
                         rt_cache_time = now
 
+            # ── SABnzbd fetch ─────────────────────────────────────────────────
+            if active_client == "sabnzbd" and _SAB_AVAILABLE and _sab_conn:
+                if not sab_cached_rows or (now - sab_cache_time) >= sab_fetch_interval:
+                    try:
+                        _sab_rows = _sab_client.fetch(_sab_conn)
+                        if _sab_rows or not sab_cached_rows:
+                            sab_cached_rows = _sab_rows
+                            sab_cached_torrents = [r.get("raw", {}) for r in _sab_rows]
+                            data_changed = True
+                    except Exception:
+                        pass
+                    sab_cache_time = now
+
             # ── B: Display tier — fast direct-API refresh of visible rows ──────
             if (
                 active_client == "qbit"
@@ -3773,7 +3829,12 @@ def main() -> int:
                     data_changed = True
                 last_fast_refresh = now
 
-            rows_to_render = rt_cached_rows if active_client == "rtorrent" else cached_rows
+            if active_client == "rtorrent":
+                rows_to_render = rt_cached_rows
+            elif active_client == "sabnzbd":
+                rows_to_render = sab_cached_rows
+            else:
+                rows_to_render = cached_rows
             if scope != "all":
                 rows_to_render = [r for r in rows_to_render if state_group(r.get("raw", {}).get("state", "")) == scope]
 
@@ -3828,7 +3889,24 @@ def main() -> int:
 
             # Build cache_info for header display — switches on active_client
             _now_wall = time.time()
-            if active_client == "rtorrent":
+            if active_client == "sabnzbd":
+                cache_info = {
+                    "enabled": False,
+                    "base_path": "",
+                    "interval_s": sab_fetch_interval,
+                    "cache_hits": 0,
+                    "direct_hits": 0,
+                    "daemon_running": False,
+                    "cache_age_s": max(0.0, _now_wall - sab_cache_time) if sab_cache_time else None,
+                    "items": len(sab_cached_rows),
+                    "last_error": _sab_client.last_error if _SAB_AVAILABLE else "",
+                    "active_leases": 0,
+                    "qb_profile": {},
+                    "fast_refresh_interval": 0,
+                    "no_daemon": True,
+                    "client_label": "sab",
+                }
+            elif active_client == "rtorrent":
                 # Read rTorrent cache meta (written by silo-rt-cache-daemon)
                 _rt_meta = {}
                 if _CC_AVAILABLE:
@@ -3917,8 +3995,15 @@ def main() -> int:
                     divider_line = "-" * tab_display_width
 
                     # Use new v2 header
-                    _display_url = f"[rt] {rt_url}" if active_client == "rtorrent" else api_url
-                    _display_torrents = rt_cached_torrents if active_client == "rtorrent" else cached_torrents
+                    if active_client == "rtorrent":
+                        _display_url = f"[rt] {rt_url}"
+                        _display_torrents = rt_cached_torrents
+                    elif active_client == "sabnzbd":
+                        _display_url = f"[sab] {_sab_conn.api_url if _sab_conn else _sab_url}"
+                        _display_torrents = sab_cached_torrents
+                    else:
+                        _display_url = api_url
+                        _display_torrents = cached_torrents
                     header_lines = draw_header_v2(
                         colors=colors,
                         api_url=_display_url,
@@ -4176,7 +4261,7 @@ def main() -> int:
                     help_lines.append(f"{colors.YELLOW}Sort:{colors.RESET}        s=cycle sort field  o=toggle asc/desc")
                     help_lines.append(f"{colors.YELLOW}Filter:{colors.RESET}      f=status  c=category  #=tag  l=compound  x=pause/resume all  p=presets")
                     help_lines.append(f"{colors.YELLOW}View:{colors.RESET}        z=reset all  t=tags  d=date  h=hash  n=narrow  m=media inline  X=clear MI cache")
-                    help_lines.append(f"{colors.YELLOW}Client:{colors.RESET}      \\=switch qBit↔rTorrent")
+                    help_lines.append(f"{colors.YELLOW}Client:{colors.RESET}      \\=cycle qBit→rTorrent→SABnzbd")
                     help_lines.append(f"{colors.YELLOW}Global:{colors.RESET}      ?=help  i=cache status  q=quit  Ctrl-Q=quit")
                     help_lines.append(f"{colors.YELLOW}Actions:{colors.RESET}     (select a torrent first)")
                     help_lines.append(f"             P=Pause/Resume  V=Verify  C=Category  E=Tags  T=Trackers  Q=QC  D=Delete")
@@ -4692,7 +4777,7 @@ def main() -> int:
                     have_full_draw = False
                     continue
 
-                # '\': switch active client (qBit ↔ rTorrent)
+                # '\': cycle active client (qBit → rTorrent → SABnzbd → qBit)
                 if key == "\\":
                     if active_client == "qbit":
                         if _RT_AVAILABLE and rt_url:
@@ -4700,9 +4785,23 @@ def main() -> int:
                             rt_cached_rows = []
                             rt_cache_time = 0.0
                             set_banner(f"Switched to rTorrent  ({rt_url})")
+                        elif _SAB_AVAILABLE and _sab_api_key:
+                            active_client = "sabnzbd"
+                            sab_cached_rows = []
+                            sab_cache_time = 0.0
+                            set_banner(f"Switched to SABnzbd  ({_sab_conn.api_url if _sab_conn else _sab_url})")
                         else:
-                            set_banner("rTorrent not configured — set rtorrent.xmlrpc_url in silo.yml")
-                    else:
+                            set_banner("No other clients configured — set rtorrent.xmlrpc_url or sabnzbd in silo.yml")
+                    elif active_client == "rtorrent":
+                        if _SAB_AVAILABLE and _sab_api_key:
+                            active_client = "sabnzbd"
+                            sab_cached_rows = []
+                            sab_cache_time = 0.0
+                            set_banner(f"Switched to SABnzbd  ({_sab_conn.api_url if _sab_conn else _sab_url})")
+                        else:
+                            active_client = "qbit"
+                            set_banner("Switched to qBittorrent")
+                    else:  # sabnzbd
                         active_client = "qbit"
                         set_banner("Switched to qBittorrent")
                     have_full_draw = False
@@ -4720,6 +4819,12 @@ def main() -> int:
                                 res = _rt_act[1](_rt_proxy, selection_hash, selected_item)
                             else:
                                 res = f"{key.upper()} not supported on rTorrent"
+                        elif active_client == "sabnzbd" and _SAB_AVAILABLE and _sab_conn:
+                            _sab_act = _sab_client.ACTIONS.get(key.upper())
+                            if _sab_act:
+                                res = _sab_act[1](_sab_conn, selection_hash, selected_item)
+                            else:
+                                res = f"{key.upper()} not supported on SABnzbd"
                         else:
                             res = apply_action(opener, api_url, key.upper(), selected_item)
                         set_banner(f"Action {key.upper()}: {res}")
