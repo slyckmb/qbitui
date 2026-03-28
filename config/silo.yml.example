@@ -33,11 +33,14 @@ downloaders:
     # password: ""
 
   sabnzbd:
-    # SABnzbd is configured via environment variables:
-    #   SABNZBD_API_URL=http://localhost:8080/sabnzbd
+    # SABnzbd HTTP API base URL (without /api suffix — added automatically)
+    api_url: "http://localhost:8085"
+    # API key (shown in SABnzbd → Config → General → API Key)
+    # You can also supply these via environment variables instead:
+    #   SABNZBD_URL=http://localhost:8085
     #   SABNZBD_API_KEY=<your-api-key>
-    # No entries needed here currently.
+    # api_key: ""
 
 # ── Hotkey reference ──────────────────────────────────────────────────────────
-#   \   (backslash)   Switch active client: qBittorrent ↔ rTorrent
+#   \   (backslash)   Cycle active client: qBittorrent → rTorrent → SABnzbd
 #   ?                 Show full help / keymap inside the TUI

@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-import re
 import select
 import shutil
 import sys

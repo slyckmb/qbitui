@@ -11,4 +11,5 @@ downloaders:
     xmlrpc_url: "http://localhost:18000/RPC2"
 
   sabnzbd:
-    # Configured via SABNZBD_API_URL / SABNZBD_API_KEY env vars
+    api_url: "http://localhost:8787"
+    # api_key: ""   # set via SABNZBD_API_KEY env var

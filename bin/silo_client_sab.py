@@ -244,7 +244,6 @@ def fetch(conn: SabConn, history_limit: int = 25) -> list[dict]:
 
         pct      = int(slot.get("percentage") or 0)
         mb_total = float(slot.get("mb") or 0)
-        mb_left  = float(slot.get("mbleft") or 0)
         size_bytes = int(mb_total * 1_048_576) if mb_total else 0
 
         dlspeed = queue_speed_bps if (i == 0 and state == "downloading") else 0
