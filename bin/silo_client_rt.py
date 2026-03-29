@@ -24,8 +24,9 @@ except Exception:
 
 # ── Module-level identity ────────────────────────────────────────────────────
 
-NAME = "rTorrent"
-KEY  = "rtorrent"   # key used in active_client comparisons
+NAME    = "rTorrent"
+KEY     = "rtorrent"   # key used in active_client comparisons
+VERSION = "1.1.0"
 
 # ── rTorrent multicall fields ────────────────────────────────────────────────
 #

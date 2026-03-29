@@ -14,3 +14,9 @@ slots:
     - pu
     enabled: true
     negate: true
+  '9':
+  - type: status
+    values:
+    - su
+    enabled: true
+    negate: true

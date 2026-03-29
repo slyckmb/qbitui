@@ -60,7 +60,7 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 LAST_UPDATED = "2026-03-28"
 FULL_TUI_MIN_WIDTH = 120
 
