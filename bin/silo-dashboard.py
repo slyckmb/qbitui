@@ -60,7 +60,7 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.3.1"
+VERSION = "2.3.2"
 LAST_UPDATED = "2026-03-28"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -965,11 +965,11 @@ def get_content_path(torrent_raw: dict) -> str:
         item_name = torrent_raw.get("name") or ""
         content_path = str(Path(save_path) / item_name) if save_path and item_name else ""
     if not content_path:
-        # rTorrent: d.base_path= returns the full path to the file (single-file torrent)
-        # or the torrent's directory (multi-file torrent) — more precise than d.directory=
+        # rTorrent: base_path is computed as directory/name (single-file) or directory
+        # (multi-file, where rTorrent already appends the torrent name to directory)
         content_path = torrent_raw.get("base_path") or ""
     if not content_path:
-        # rTorrent fallback: d.directory= is the parent directory
+        # rTorrent last-resort: bare directory (parent dir for single-file)
         content_path = torrent_raw.get("directory") or ""
     return content_path
 

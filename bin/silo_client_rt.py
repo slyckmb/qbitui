@@ -26,7 +26,7 @@ except Exception:
 
 NAME    = "rTorrent"
 KEY     = "rtorrent"   # key used in active_client comparisons
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 # ── rTorrent multicall fields ────────────────────────────────────────────────
 #
@@ -54,9 +54,10 @@ _MULTICALL_FIELDS = [
     "d.custom1=",        # [10] ruTorrent label → used as category
     "d.peers_accounted=",# [11] total peer count
     "d.creation_date=",  # [12] unix timestamp torrent was added
-    "d.directory=",      # [13] parent save directory (for single-file: dir containing file)
+    "d.directory=",      # [13] save directory (multi-file: already includes torrent name)
     "d.hashing=",        # [14] 0=not hashing, 1=hash-checking (d.check_hash in progress)
-    "d.base_path=",      # [15] full path to content: file path (single) or dir path (multi)
+    # NOTE: d.base_path= and d.tracker_domain= are NOT available on this rTorrent build.
+    # base_path is computed in Python from directory + name (see _compute_base_path).
 ]
 
 # Indices into the data result list (0-based, post-consumption of arg3)
@@ -75,7 +76,26 @@ _F_PEERS     = 11
 _F_CREATED   = 12
 _F_DIRECTORY = 13
 _F_HASHING   = 14
-_F_BASE_PATH = 15
+
+# ── Path helpers ─────────────────────────────────────────────────────────────
+
+def _compute_base_path(directory: str, name: str) -> str:
+    """Derive the full content path without relying on d.base_path=.
+
+    rTorrent stores:
+      - Multi-file torrent: d.directory= = /base/TorrentName  (name already appended)
+      - Single-file torrent: d.directory= = /base             (name is the filename)
+
+    Strategy: try directory/name as a file first; if it exists that is the
+    single-file case.  Otherwise fall back to directory itself (multi-file).
+    """
+    if not directory:
+        return ""
+    candidate = Path(directory) / name if name else None
+    if candidate and candidate.is_file():
+        return str(candidate)
+    return directory
+
 
 # ── Formatting helpers (mirrors dashboard equivalents) ───────────────────────
 
@@ -241,7 +261,7 @@ def fetch(url: str) -> list[dict]:
             created      = item[_F_CREATED]
             directory    = str(item[_F_DIRECTORY] or "")
             hashing      = int(item[_F_HASHING]) if len(item) > _F_HASHING else 0
-            base_path    = str(item[_F_BASE_PATH] or "") if len(item) > _F_BASE_PATH else ""
+            base_path    = _compute_base_path(directory, name)
 
             # Derived values
             ratio_float  = ratio_raw / 1000.0
