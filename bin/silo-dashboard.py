@@ -60,7 +60,7 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.3.2"
+VERSION = "2.3.3"
 LAST_UPDATED = "2026-03-28"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -3208,7 +3208,12 @@ def main() -> int:
             set_banner("Selection moved off page.")
             return
             
-        available = resolve_available_tabs(opener, api_url, selected_row)
+        _cyc_rt_proxy = (_rt_client.connect(rt_url)
+                         if active_client == "rtorrent" and _RT_AVAILABLE and rt_url
+                         else None)
+        available = resolve_available_tabs(opener, api_url, selected_row,
+                                           active_client=active_client,
+                                           rt_proxy=_cyc_rt_proxy)
         if not available:
             available = ["Info"]
             
