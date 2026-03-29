@@ -26,7 +26,7 @@ except Exception:
 
 NAME    = "rTorrent"
 KEY     = "rtorrent"   # key used in active_client comparisons
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # ── rTorrent multicall fields ────────────────────────────────────────────────
 #
@@ -54,8 +54,9 @@ _MULTICALL_FIELDS = [
     "d.custom1=",        # [10] ruTorrent label → used as category
     "d.peers_accounted=",# [11] total peer count
     "d.creation_date=",  # [12] unix timestamp torrent was added
-    "d.directory=",      # [13] save directory path
+    "d.directory=",      # [13] parent save directory (for single-file: dir containing file)
     "d.hashing=",        # [14] 0=not hashing, 1=hash-checking (d.check_hash in progress)
+    "d.base_path=",      # [15] full path to content: file path (single) or dir path (multi)
 ]
 
 # Indices into the data result list (0-based, post-consumption of arg3)
@@ -74,6 +75,7 @@ _F_PEERS     = 11
 _F_CREATED   = 12
 _F_DIRECTORY = 13
 _F_HASHING   = 14
+_F_BASE_PATH = 15
 
 # ── Formatting helpers (mirrors dashboard equivalents) ───────────────────────
 
@@ -239,6 +241,7 @@ def fetch(url: str) -> list[dict]:
             created      = item[_F_CREATED]
             directory    = str(item[_F_DIRECTORY] or "")
             hashing      = int(item[_F_HASHING]) if len(item) > _F_HASHING else 0
+            base_path    = str(item[_F_BASE_PATH] or "") if len(item) > _F_BASE_PATH else ""
 
             # Derived values
             ratio_float  = ratio_raw / 1000.0
@@ -274,6 +277,7 @@ def fetch(url: str) -> list[dict]:
                 "added_on":  int(created) if created else 0,
                 "tracker":   tracker,
                 "directory": directory,
+                "base_path": base_path,   # d.base_path= = full path to file or dir
                 "message":   message,
             }
 
@@ -312,7 +316,7 @@ def fetch(url: str) -> list[dict]:
 def fetch_trackers(proxy: xmlrpc.client.ServerProxy, hash_val: str) -> list:
     """Return tracker list as dicts with url/status/tier (matches render_trackers_lines)."""
     try:
-        results = proxy.t.multicall2(hash_val.upper(), "",
+        results = proxy.t.multicall(hash_val.upper(), "",
             "t.url=", "t.type=", "t.is_usable=", "t.scrape_success=") or []
         out = []
         for row in results:

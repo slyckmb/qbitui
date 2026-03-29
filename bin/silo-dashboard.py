@@ -60,7 +60,7 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.3.0"
+VERSION = "2.3.1"
 LAST_UPDATED = "2026-03-28"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -965,7 +965,11 @@ def get_content_path(torrent_raw: dict) -> str:
         item_name = torrent_raw.get("name") or ""
         content_path = str(Path(save_path) / item_name) if save_path and item_name else ""
     if not content_path:
-        # rTorrent: d.directory= is the content root
+        # rTorrent: d.base_path= returns the full path to the file (single-file torrent)
+        # or the torrent's directory (multi-file torrent) — more precise than d.directory=
+        content_path = torrent_raw.get("base_path") or ""
+    if not content_path:
+        # rTorrent fallback: d.directory= is the parent directory
         content_path = torrent_raw.get("directory") or ""
     return content_path
 
@@ -2510,7 +2514,8 @@ def render_info_lines(item: dict, width: int) -> list[str]:
     use_dl    = bool(raw.get("use_download_path"))
     progress  = float(raw.get("progress") or 0)
     name      = (raw.get("name") or "").strip()
-    directory = (raw.get("directory") or "").rstrip("/")   # rTorrent: d.directory= is content root
+    directory = (raw.get("directory") or "").rstrip("/")   # rTorrent: d.directory= is parent dir
+    base_path = (raw.get("base_path") or "").rstrip("/")  # rTorrent: d.base_path= = full content path
 
     def _path_label(p: str) -> str:
         if not p:
@@ -2522,7 +2527,9 @@ def render_info_lines(item: dict, width: int) -> list[str]:
     lines.append("-" * width)
     lines.append("Paths:")
     if directory and not save_path:
-        # rTorrent: d.directory= is the actual content root (no separate save/incomplete paths)
+        # rTorrent: show both the exact content path and the parent directory
+        if base_path:
+            lines.append(f"  Content:    {_path_label(base_path)}")
         lines.append(f"  Directory:  {_path_label(directory)}")
     else:
         # qBit: compute active path from save_path / download_path / content_path
