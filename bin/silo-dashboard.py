@@ -60,7 +60,7 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.3.4"
+VERSION = "2.3.5"
 LAST_UPDATED = "2026-03-28"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -2870,25 +2870,17 @@ def resolve_available_tabs(opener: urllib.request.OpenerDirector, api_url: str, 
     if not hash_value:
         return available
     if active_client == "rtorrent" and rt_proxy is not None:
-        trackers = _rt_client.fetch_trackers(rt_proxy, hash_value)
-        if trackers:
-            available.append("Trackers")
+        available.append("Trackers")
         files = _rt_client.fetch_files(rt_proxy, hash_value)
         if files:
             available.append("Content")
-        peers_payload = _rt_client.fetch_peers(rt_proxy, hash_value)
-        if peers_payload.get("peers"):
-            available.append("Peers")
+        available.append("Peers")
     else:
-        trackers = fetch_trackers(opener, api_url, hash_value)
-        if trackers:
-            available.append("Trackers")
+        available.append("Trackers")
         files = fetch_files(opener, api_url, hash_value)
         if files:
             available.append("Content")
-        peers_payload = fetch_peers(opener, api_url, hash_value)
-        if peers_payload.get("peers"):
-            available.append("Peers")
+        available.append("Peers")
     raw = item.get("raw") or {}
     content_path = get_content_path(raw)
     if content_path and shutil.which("mediainfo") and get_largest_media_file(content_path):
