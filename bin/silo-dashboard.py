@@ -964,6 +964,9 @@ def get_content_path(torrent_raw: dict) -> str:
         save_path = torrent_raw.get("save_path") or ""
         item_name = torrent_raw.get("name") or ""
         content_path = str(Path(save_path) / item_name) if save_path and item_name else ""
+    if not content_path:
+        # rTorrent: d.directory= is the content root
+        content_path = torrent_raw.get("directory") or ""
     return content_path
 
 
@@ -2507,16 +2510,7 @@ def render_info_lines(item: dict, width: int) -> list[str]:
     use_dl    = bool(raw.get("use_download_path"))
     progress  = float(raw.get("progress") or 0)
     name      = (raw.get("name") or "").strip()
-
-    # active = where files are right now
-    if api_cp:
-        active = api_cp
-    elif use_dl and progress < 1.0 and dl_path:
-        active = str(Path(dl_path) / name) if name else dl_path
-    elif save_path:
-        active = str(Path(save_path) / name) if name else save_path
-    else:
-        active = ""
+    directory = (raw.get("directory") or "").rstrip("/")   # rTorrent: d.directory= is content root
 
     def _path_label(p: str) -> str:
         if not p:
@@ -2527,19 +2521,32 @@ def render_info_lines(item: dict, width: int) -> list[str]:
 
     lines.append("-" * width)
     lines.append("Paths:")
-    if active:
-        same_as_final = (active == str(Path(save_path) / name) if (save_path and name) else active == save_path)
-        lines.append(f"  Active:     {_path_label(active)}")
-        if save_path and not same_as_final:
-            lines.append(f"  Final dest: {_path_label(str(Path(save_path) / name) if name else save_path)}")
-    if save_path:
-        lines.append(f"  Save path:  {_path_label(save_path)}")
-    if use_dl and dl_path:
-        in_dl = use_dl and progress < 1.0
-        dl_note = "(active — incomplete)" if in_dl else "(complete — moved to save path)"
-        lines.append(f"  Incomplete: {dl_path}  {dl_note}")
-    elif not use_dl:
-        lines.append(f"  Incomplete: N/A (use_download_path=false)")
+    if directory and not save_path:
+        # rTorrent: d.directory= is the actual content root (no separate save/incomplete paths)
+        lines.append(f"  Directory:  {_path_label(directory)}")
+    else:
+        # qBit: compute active path from save_path / download_path / content_path
+        if api_cp:
+            active = api_cp
+        elif use_dl and progress < 1.0 and dl_path:
+            active = str(Path(dl_path) / name) if name else dl_path
+        elif save_path:
+            active = str(Path(save_path) / name) if name else save_path
+        else:
+            active = ""
+        if active:
+            same_as_final = (active == str(Path(save_path) / name) if (save_path and name) else active == save_path)
+            lines.append(f"  Active:     {_path_label(active)}")
+            if save_path and not same_as_final:
+                lines.append(f"  Final dest: {_path_label(str(Path(save_path) / name) if name else save_path)}")
+        if save_path:
+            lines.append(f"  Save path:  {_path_label(save_path)}")
+        if use_dl and dl_path:
+            in_dl = use_dl and progress < 1.0
+            dl_note = "(active — incomplete)" if in_dl else "(complete — moved to save path)"
+            lines.append(f"  Incomplete: {dl_path}  {dl_note}")
+        elif not use_dl:
+            lines.append(f"  Incomplete: N/A (use_download_path=false)")
 
     # ── Other metadata ────────────────────────────────────────────────────────
     lines.append("-" * width)
@@ -2849,20 +2856,32 @@ def render_mediainfo_lines(item: dict, width: int, colors: ColorScheme) -> list[
     return lines or [f"{colors.FG_TERTIARY}No MediaInfo.{colors.RESET}"]
 
 
-def resolve_available_tabs(opener: urllib.request.OpenerDirector, api_url: str, item: dict) -> list[str]:
+def resolve_available_tabs(opener: urllib.request.OpenerDirector, api_url: str, item: dict,
+                            active_client: str = "qbit", rt_proxy=None) -> list[str]:
     available = ["Info"]
     hash_value = item.get("hash")
     if not hash_value:
         return available
-    trackers = fetch_trackers(opener, api_url, hash_value)
-    if trackers:
-        available.append("Trackers")
-    files = fetch_files(opener, api_url, hash_value)
-    if files:
-        available.append("Content")
-    peers_payload = fetch_peers(opener, api_url, hash_value)
-    if peers_payload.get("peers"):
-        available.append("Peers")
+    if active_client == "rtorrent" and rt_proxy is not None:
+        trackers = _rt_client.fetch_trackers(rt_proxy, hash_value)
+        if trackers:
+            available.append("Trackers")
+        files = _rt_client.fetch_files(rt_proxy, hash_value)
+        if files:
+            available.append("Content")
+        peers_payload = _rt_client.fetch_peers(rt_proxy, hash_value)
+        if peers_payload.get("peers"):
+            available.append("Peers")
+    else:
+        trackers = fetch_trackers(opener, api_url, hash_value)
+        if trackers:
+            available.append("Trackers")
+        files = fetch_files(opener, api_url, hash_value)
+        if files:
+            available.append("Content")
+        peers_payload = fetch_peers(opener, api_url, hash_value)
+        if peers_payload.get("peers"):
+            available.append("Peers")
     raw = item.get("raw") or {}
     content_path = get_content_path(raw)
     if content_path and shutil.which("mediainfo") and get_largest_media_file(content_path):
@@ -4036,7 +4055,12 @@ def main() -> int:
                         tui_print("Selection not available on this page.")
                         tui_print(tab_divider)
                     else:
-                        available_tabs = resolve_available_tabs(opener, api_url, selected_row)
+                        _tab_rt_proxy = (_rt_client.connect(rt_url)
+                                         if active_client == "rtorrent" and _RT_AVAILABLE and rt_url
+                                         else None)
+                        available_tabs = resolve_available_tabs(opener, api_url, selected_row,
+                                                                active_client=active_client,
+                                                                rt_proxy=_tab_rt_proxy)
                         if not available_tabs: available_tabs = ["Info"]
                         active_label = tabs[active_tab]
                         if active_label not in available_tabs:
@@ -4055,17 +4079,26 @@ def main() -> int:
                         max_rows = max(10, shutil.get_terminal_size((100, 30)).lines - 15)
                         if active_label == "Info": content_lines = render_info_lines(selected_row, tab_width)
                         elif active_label == "Trackers":
-                            trackers = fetch_trackers(opener, api_url, selection_hash)
+                            if _tab_rt_proxy is not None:
+                                trackers = _rt_client.fetch_trackers(_tab_rt_proxy, selection_hash)
+                            else:
+                                trackers = fetch_trackers(opener, api_url, selection_hash)
                             content_lines = render_trackers_lines(trackers, tab_width)
                         elif active_label == "Content":
-                            files = fetch_files(opener, api_url, selection_hash)
+                            if _tab_rt_proxy is not None:
+                                files = _rt_client.fetch_files(_tab_rt_proxy, selection_hash)
+                            else:
+                                files = fetch_files(opener, api_url, selection_hash)
                             content_lines = render_files_lines(
                                 files,
                                 tab_width,
                                 get_content_path(selected_row.get("raw") or {}),
                             )
                         elif active_label == "Peers":
-                            peers_payload = fetch_peers(opener, api_url, selection_hash)
+                            if _tab_rt_proxy is not None:
+                                peers_payload = _rt_client.fetch_peers(_tab_rt_proxy, selection_hash)
+                            else:
+                                peers_payload = fetch_peers(opener, api_url, selection_hash)
                             content_lines = render_peers_lines(peers_payload, tab_width)
                         else: content_lines = render_mediainfo_lines(selected_row, tab_width, colors)
                         # Clamp scroll offset

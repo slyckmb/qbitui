@@ -306,6 +306,72 @@ def fetch(url: str) -> list[dict]:
     return rows
 
 
+# ── Per-torrent detail fetchers ──────────────────────────────────────────────
+
+def fetch_trackers(proxy: xmlrpc.client.ServerProxy, hash_val: str) -> list:
+    """Return tracker list as dicts with url/status/tier (matches render_trackers_lines)."""
+    try:
+        results = proxy.t.multicall2(hash_val.upper(), "",
+            "t.url=", "t.type=", "t.is_usable=", "t.scrape_success=") or []
+        out = []
+        for row in results:
+            url, type_, is_usable, scrape_ok = row[0], row[1], int(row[2]), int(row[3])
+            if is_usable and scrape_ok:
+                status = "working"
+            elif is_usable:
+                status = "not working"
+            else:
+                status = "disabled"
+            out.append({"url": url, "status": status, "tier": str(type_)})
+        return out
+    except Exception:
+        return []
+
+
+def fetch_files(proxy: xmlrpc.client.ServerProxy, hash_val: str) -> list:
+    """Return file list as dicts with name/size/progress/priority (matches render_files_lines)."""
+    try:
+        results = proxy.f.multicall(hash_val.upper(), "",
+            "f.path=", "f.size_bytes=", "f.completed_chunks=",
+            "f.size_chunks=", "f.priority=") or []
+        out = []
+        for row in results:
+            path, size_bytes, completed, total_chunks, priority = row
+            progress = completed / total_chunks if total_chunks else 0.0
+            out.append({
+                "name":     path,
+                "size":     int(size_bytes),
+                "progress": progress,
+                "priority": int(priority),
+            })
+        return out
+    except Exception:
+        return []
+
+
+def fetch_peers(proxy: xmlrpc.client.ServerProxy, hash_val: str) -> dict:
+    """Return peer dict in format expected by render_peers_lines."""
+    try:
+        results = proxy.p.multicall(hash_val.upper(), "",
+            "p.address=", "p.port=", "p.client_version=",
+            "p.down_rate=", "p.up_rate=", "p.completed_percent=",
+            "p.is_incoming=") or []
+        peers: dict = {}
+        for row in results:
+            addr, port, client, dl_rate, ul_rate, pct, is_incoming = row
+            key = f"{addr}:{port}"
+            peers[key] = {
+                "dl_speed": int(dl_rate),
+                "up_speed": int(ul_rate),
+                "client":   str(client),
+                "progress": float(pct) / 100.0,
+                "flags":    "I" if is_incoming else "",
+            }
+        return {"peers": peers}
+    except Exception:
+        return {}
+
+
 # ── Actions ──────────────────────────────────────────────────────────────────
 
 def _action_pause_resume(proxy: xmlrpc.client.ServerProxy,
