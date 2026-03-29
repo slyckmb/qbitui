@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Version: 1.0.0
+# Version: 1.0.1
 # rt-watch.sh — rTorrent state dashboard (port of qb-checking-watch.sh)
 #
 # Polls rTorrent via XMLRPC and displays torrent state counts.
 # Env: RT_CONTAINER, RT_RPC_URL
 set -euo pipefail
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.0.1"
 RT_CONTAINER="${RT_CONTAINER:-rtorrent_vpn}"
 RT_RPC_URL="${RT_RPC_URL:-http://localhost:8000/}"
 INTERVAL_S=30
@@ -72,7 +72,8 @@ if [[ "$DASHBOARD" -eq 0 ]]; then
 fi
 
 # ── rTorrent XMLRPC fetch ─────────────────────────────────────────────────────
-# Calls d.multicall2 via docker exec, returns JSON array of torrent objects.
+# Calls d.multicall2 via host-side XMLRPC first, then docker exec fallback.
+# Returns JSON array of torrent objects.
 # Fields per torrent: hash, state (derived string), progress, down_rate, up_rate, message, label
 _rt_fetch_json() {
   python3 - "$RT_CONTAINER" "$RT_RPC_URL" <<'PYEOF'
@@ -99,23 +100,35 @@ body = (
     '</params></methodCall>'
 )
 
-try:
-    result = subprocess.run(
+def run_fetch(cmd, timeout):
+    try:
+        result = subprocess.run(
+            cmd,
+            input=body,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return result.stdout
+
+xml = run_fetch(
+    ['curl', '-sf', '--max-time', '10', rpc_url, '-H', 'Content-Type: text/xml', '--data', '@-'],
+    timeout=15,
+)
+if xml is None:
+    xml = run_fetch(
         ['docker', 'exec', '-i', container,
          'curl', '-sf', '--max-time', '10',
          rpc_url, '-H', 'Content-Type: text/xml', '--data', '@-'],
-        input=body, capture_output=True, text=True, timeout=15
+        timeout=15,
     )
-except Exception as e:
-    print('[]', file=sys.stderr)
+if xml is None:
     print('[]')
     sys.exit(0)
-
-if result.returncode != 0 or not result.stdout.strip():
-    print('[]')
-    sys.exit(0)
-
-xml = result.stdout
 
 # Parse each per-torrent inner <array><data>...</data></array>
 # d.multicall2 returns: methodResponse > params > param > value > array > data >

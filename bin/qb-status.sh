@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Version: 1.2.3
+# Version: 1.2.4
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.3"
+SCRIPT_VERSION="1.2.4"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QBIT_URL="${QBIT_URL:-http://localhost:9003}"
 QBIT_USER="${QBIT_USER:-${QBITTORRENTAPI_USERNAME:-admin}}"
@@ -17,8 +17,10 @@ MAX_ITERATIONS=0
 DASHBOARD=0
 USE_CACHE=1
 CACHE_MAX_AGE=30
-CACHE_AGENT="${QBIT_CACHE_AGENT:-/home/michael/dev/tools/silo/bin/qbit-cache-agent.py}"
+CACHE_AGENT="${QBIT_CACHE_AGENT:-${SILO_CACHE_AGENT:-/home/michael/dev/tools/silo/bin/silo-cache-agent.py}}"
+CACHE_FILE_FALLBACK="${QBIT_CACHE_FALLBACK_FILE:-$HOME/.cache/hashall-qb/torrents-info.json}"
 CACHE_CLIENT_ID="$(basename "$0"):$$"
+CACHE_PYTHON="${QBIT_CACHE_PYTHON:-}"
 declare -a ALLOW_HASHES=()
 
 usage() {
@@ -124,6 +126,63 @@ if [[ "$USE_CACHE" -eq 1 && ! -f "$CACHE_AGENT" ]]; then
   echo "--cache enabled but cache agent not found: $CACHE_AGENT" >&2
   exit 2
 fi
+
+resolve_cache_python() {
+  resolve_venv_python() {
+    local root="$1" venv_name="" venv_python=""
+    [[ -f "$root/.venv_name" ]] || return 1
+    venv_name="$(<"$root/.venv_name")"
+    [[ -n "$venv_name" ]] || return 1
+    venv_python="${HOME}/.venvs/${venv_name}/bin/python3"
+    [[ -x "$venv_python" ]] || return 1
+    printf '%s\n' "$venv_python"
+  }
+
+  if [[ -n "$CACHE_PYTHON" ]]; then
+    printf '%s\n' "$CACHE_PYTHON"
+    return
+  fi
+
+  local agent_realpath="" agent_dir="" repo_root="" hashall_root=""
+  agent_realpath="$(readlink -f "$CACHE_AGENT" 2>/dev/null || printf '%s' "$CACHE_AGENT")"
+  agent_dir="$(cd "$(dirname "$agent_realpath")" && pwd)"
+  repo_root="$(cd "$agent_dir/.." && pwd)"
+
+  if resolve_venv_python "$repo_root" >/dev/null 2>&1; then
+    resolve_venv_python "$repo_root"
+    return
+  fi
+
+  # `silo` exposes thin wrapper scripts that exec the canonical hashall tools.
+  if [[ -f "$agent_dir/silo_hashall_shared.py" ]]; then
+    hashall_root="${HASHALL_ROOT:-/home/michael/dev/work/hashall}"
+    if resolve_venv_python "$hashall_root" >/dev/null 2>&1; then
+      resolve_venv_python "$hashall_root"
+      return
+    fi
+  fi
+
+  command -v python3
+}
+
+CACHE_PYTHON="$(resolve_cache_python)"
+
+load_cache_file_fallback() {
+  local max_age="$1"
+  local now epoch age raw
+  [[ -f "$CACHE_FILE_FALLBACK" ]] || return 1
+  epoch="$(stat -c '%Y' "$CACHE_FILE_FALLBACK" 2>/dev/null || true)"
+  [[ -n "$epoch" && "$epoch" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)"
+  age=$((now - epoch))
+  (( age >= 0 )) || age=0
+  if (( max_age > 0 && age > max_age )); then
+    return 1
+  fi
+  raw="$(<"$CACHE_FILE_FALLBACK")"
+  jq -e . >/dev/null 2>&1 <<<"$raw" || return 1
+  printf '%s' "$raw"
+}
 
 COOKIE_FILE="$(mktemp)"
 _on_exit() {
@@ -256,15 +315,23 @@ while true; do
   if [[ "$USE_CACHE" -eq 1 ]]; then
     _raw=""
     if ! _raw="$(QBIT_URL="$QBIT_URL" QBIT_USER="$QBIT_USER" QBIT_PASS="$QBIT_PASS" \
-      python3 "$CACHE_AGENT" \
+      "$CACHE_PYTHON" "$CACHE_AGENT" \
         --max-age "$CACHE_MAX_AGE" \
         --requested-interval "$INTERVAL_S" \
         --client-id "$CACHE_CLIENT_ID" \
         --ensure-daemon \
         2>/dev/null)"; then
-      FETCH_ERROR="cache_fetch_failed"
+      if _raw="$(load_cache_file_fallback "$CACHE_MAX_AGE" 2>/dev/null)"; then
+        TORRENTS_JSON="$_raw"
+      else
+        FETCH_ERROR="cache_fetch_failed"
+      fi
     elif ! jq -e . >/dev/null 2>&1 <<<"$_raw"; then
-      FETCH_ERROR="cache_invalid_json"
+      if _raw="$(load_cache_file_fallback "$CACHE_MAX_AGE" 2>/dev/null)"; then
+        TORRENTS_JSON="$_raw"
+      else
+        FETCH_ERROR="cache_invalid_json"
+      fi
     else
       TORRENTS_JSON="$_raw"
     fi
