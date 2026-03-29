@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 # ── Utilities ────────────────────────────────────────────────────────────────
@@ -74,6 +74,27 @@ def daemon_running(pid_file: Path) -> bool:
     except Exception:
         return False
     return _process_running(pid)
+
+
+def stop_daemon(pid_file: Path) -> bool:
+    """Send SIGTERM to the daemon recorded in pid_file.
+
+    Returns True if a signal was delivered (process existed), False if there
+    was nothing to kill.  Safe to call even if the daemon is not running.
+    """
+    if not pid_file.exists():
+        return False
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except Exception:
+        return False
+    if not _process_running(pid):
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except OSError:
+        return False
 
 
 # ── Lease helpers ────────────────────────────────────────────────────────────

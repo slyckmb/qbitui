@@ -60,7 +60,7 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.3.3"
+VERSION = "2.3.4"
 LAST_UPDATED = "2026-03-28"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -3079,6 +3079,12 @@ def main() -> int:
     _rt_cache_max_age = 10.0          # treat cache stale after this many seconds
     _rt_daemon_ping_interval = 15.0   # how often to re-ping ensure_daemon
     _rt_last_daemon_ping = 0.0
+
+    # Always restart the cache daemon on startup so it picks up any code changes.
+    # The last-good cache file is preserved on disk; the brief respawn gap (~3-5s)
+    # shows stale data — same behaviour as a normal cache-miss.
+    if _CC_AVAILABLE and _rt_daemon_script.exists():
+        _cc.stop_daemon(_rt_pid_file)
     _rt_cache_mtime = 0.0             # mtime of last successfully read cache file
 
     # SABnzbd state
