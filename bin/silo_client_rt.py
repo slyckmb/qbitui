@@ -28,7 +28,7 @@ except Exception:
 
 NAME    = "rTorrent"
 KEY     = "rtorrent"   # key used in active_client comparisons
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 # ── Module-level tracker cache ───────────────────────────────────────────────
 # Populated by _fetch_tracker_batch() inside fetch(); persists across daemon
@@ -108,6 +108,10 @@ def _fetch_tracker_batch(
     Returns dict: hash_lower -> list[dict{url, status, tier}].
     Each chunk bundles _TRACKER_BATCH_SIZE t.multicall calls into one HTTP
     request, keeping RT XMLRPC load low even for large swarms.
+
+    Fields used: t.url= and t.is_usable= — confirmed available on this build.
+    t.scrape_success= is NOT available and must not be requested.
+    Status mapping: is_usable=1 → "working", is_usable=0 → "disabled".
     """
     result: dict = {}
     for i in range(0, len(hashes), _TRACKER_BATCH_SIZE):
@@ -115,7 +119,7 @@ def _fetch_tracker_batch(
         calls = [
             {
                 "methodName": "t.multicall",
-                "params": [h.upper(), "", "t.url=", "t.type=", "t.is_usable=", "t.scrape_success="],
+                "params": [h.upper(), "", "t.url=", "t.is_usable="],
             }
             for h in chunk
         ]
@@ -134,17 +138,10 @@ def _fetch_tracker_batch(
             trackers = []
             for row in rows:
                 try:
-                    url     = str(row[0])
-                    type_   = row[1]
-                    usable  = int(row[2])
-                    scrape  = int(row[3])
-                    if usable and scrape:
-                        status = "working"
-                    elif usable:
-                        status = "not working"
-                    else:
-                        status = "disabled"
-                    trackers.append({"url": url, "status": status, "tier": str(type_)})
+                    url    = str(row[0])
+                    usable = int(row[1])
+                    status = "working" if usable else "disabled"
+                    trackers.append({"url": url, "status": status, "tier": "0"})
                 except Exception:
                     continue
             result[h] = trackers
@@ -455,20 +452,32 @@ def fetch(url: str) -> list[dict]:
 # ── Per-torrent detail fetchers ──────────────────────────────────────────────
 
 def fetch_trackers(proxy: xmlrpc.client.ServerProxy, hash_val: str) -> list:
-    """Return tracker list as dicts with url/status/tier (matches render_trackers_lines)."""
+    """Return tracker list as dicts with url/status/tier (matches render_trackers_lines).
+
+    Uses t.url=, t.is_usable=, t.failed_counter= — all confirmed available on
+    this rTorrent build.  t.scrape_success= is NOT available and must not be
+    requested.
+
+    Status mapping:
+      is_usable=0                       → "disabled"
+      is_usable=1, failed_counter=0     → "working"
+      is_usable=1, failed_counter>0     → "not working"
+    """
     try:
         results = proxy.t.multicall(hash_val.upper(), "",
-            "t.url=", "t.type=", "t.is_usable=", "t.scrape_success=") or []
+            "t.url=", "t.is_usable=", "t.failed_counter=") or []
         out = []
         for row in results:
-            url, type_, is_usable, scrape_ok = row[0], row[1], int(row[2]), int(row[3])
-            if is_usable and scrape_ok:
-                status = "working"
-            elif is_usable:
-                status = "not working"
-            else:
+            url          = str(row[0])
+            is_usable    = int(row[1])
+            failed_count = int(row[2])
+            if not is_usable:
                 status = "disabled"
-            out.append({"url": url, "status": status, "tier": str(type_)})
+            elif failed_count == 0:
+                status = "working"
+            else:
+                status = "not working"
+            out.append({"url": url, "status": status, "tier": "0"})
         return out
     except Exception:
         return []
