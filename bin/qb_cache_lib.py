@@ -157,11 +157,15 @@ def _fetch_torrents_snapshot(
     qbit_url: str,
     username: str,
     password: str,
-) -> Tuple[str, int, Dict[str, Any]]:
+) -> Tuple[str, int, Dict[str, Any], Dict[str, Any]]:
     client = get_qbittorrent_client(base_url=qbit_url, username=username, password=password)
     profile = client.get_server_profile(force_refresh=True)
     torrents = client.get_torrents_payload()
-    return json.dumps(torrents, indent=2), len(torrents), profile.to_dict()
+    tracker_meta: Dict[str, Any] = {"mode": "not_enriched"}
+    enrich = getattr(client, "enrich_torrents_payload_with_trackers", None)
+    if callable(enrich):
+        torrents, tracker_meta = enrich(torrents)
+    return json.dumps(torrents, indent=2), len(torrents), profile.to_dict(), tracker_meta
 
 
 def _ensure_daemon(
@@ -463,7 +467,7 @@ def daemon_main(argv: Optional[List[str]] = None) -> int:
     try:
         if args.once:
             now = time.time()
-            payload_text, item_count, profile = _fetch_torrents_snapshot(
+            payload_text, item_count, profile, tracker_meta = _fetch_torrents_snapshot(
                 qbit_url=qbit_url,
                 username=username,
                 password=password,
@@ -480,6 +484,7 @@ def daemon_main(argv: Optional[List[str]] = None) -> int:
                     "last_error": "",
                     "consecutive_failures": 0,
                     "qb_profile": profile,
+                    "tracker_enrichment": tracker_meta,
                     "updated_at": now,
                     "updated_at_iso": _iso(now),
                 }
@@ -525,7 +530,7 @@ def daemon_main(argv: Optional[List[str]] = None) -> int:
             )
             if should_fetch:
                 try:
-                    payload_text, item_count, profile = _fetch_torrents_snapshot(
+                    payload_text, item_count, profile, tracker_meta = _fetch_torrents_snapshot(
                         qbit_url=qbit_url,
                         username=username,
                         password=password,
@@ -543,6 +548,7 @@ def daemon_main(argv: Optional[List[str]] = None) -> int:
                             "last_error": "",
                             "consecutive_failures": 0,
                             "qb_profile": profile,
+                            "tracker_enrichment": tracker_meta,
                             "updated_at": now,
                             "updated_at_iso": _iso(now),
                         }
