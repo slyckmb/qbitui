@@ -12,6 +12,8 @@ build_rows() output).
 """
 
 import os
+import time
+import urllib.parse
 import xmlrpc.client
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +28,17 @@ except Exception:
 
 NAME    = "rTorrent"
 KEY     = "rtorrent"   # key used in active_client comparisons
-VERSION = "1.2.1"
+VERSION = "1.3.0"
+
+# ── Module-level tracker cache ───────────────────────────────────────────────
+# Populated by _fetch_tracker_batch() inside fetch(); persists across daemon
+# fetch cycles (the daemon imports this module once and keeps it in memory).
+# Refresh happens at most once per _TRACKER_CACHE_TTL seconds.
+
+_tracker_cache: dict      = {}   # hash_lower -> list[dict]  (url/status/tier)
+_tracker_cache_time: float = 0.0
+_TRACKER_CACHE_TTL: float  = 300.0   # seconds between full tracker refreshes
+_TRACKER_BATCH_SIZE: int   = 500     # t.multicall calls per system.multicall chunk
 
 # ── rTorrent multicall fields ────────────────────────────────────────────────
 #
@@ -76,6 +88,68 @@ _F_PEERS     = 11
 _F_CREATED   = 12
 _F_DIRECTORY = 13
 _F_HASHING   = 14
+
+# ── Tracker batch fetch ───────────────────────────────────────────────────────
+
+def _url_domain(url: str) -> str:
+    """Extract hostname from a tracker URL ('http://tracker.example.com:6969/ann' → 'tracker.example.com')."""
+    try:
+        return urllib.parse.urlparse(url).hostname or "-"
+    except Exception:
+        return "-"
+
+
+def _fetch_tracker_batch(
+    proxy: xmlrpc.client.ServerProxy,
+    hashes: list,
+) -> dict:
+    """Fetch tracker data for all hashes via system.multicall, in chunks.
+
+    Returns dict: hash_lower -> list[dict{url, status, tier}].
+    Each chunk bundles _TRACKER_BATCH_SIZE t.multicall calls into one HTTP
+    request, keeping RT XMLRPC load low even for large swarms.
+    """
+    result: dict = {}
+    for i in range(0, len(hashes), _TRACKER_BATCH_SIZE):
+        chunk = hashes[i : i + _TRACKER_BATCH_SIZE]
+        calls = [
+            {
+                "methodName": "t.multicall",
+                "params": [h.upper(), "", "t.url=", "t.type=", "t.is_usable=", "t.scrape_success="],
+            }
+            for h in chunk
+        ]
+        try:
+            responses = proxy.system.multicall(calls)
+        except Exception:
+            # Partial failure: skip this chunk, leave hashes unmapped
+            continue
+        for h, resp in zip(chunk, responses):
+            # system.multicall wraps each result in a 1-element list on success,
+            # or returns a fault dict on per-call error.
+            if isinstance(resp, dict) and "faultCode" in resp:
+                result[h] = []
+                continue
+            rows = resp[0] if (resp and isinstance(resp, list)) else []
+            trackers = []
+            for row in rows:
+                try:
+                    url     = str(row[0])
+                    type_   = row[1]
+                    usable  = int(row[2])
+                    scrape  = int(row[3])
+                    if usable and scrape:
+                        status = "working"
+                    elif usable:
+                        status = "not working"
+                    else:
+                        status = "disabled"
+                    trackers.append({"url": url, "status": status, "tier": str(type_)})
+                except Exception:
+                    continue
+            result[h] = trackers
+    return result
+
 
 # ── Path helpers ─────────────────────────────────────────────────────────────
 
@@ -228,12 +302,17 @@ def connect(url: str) -> xmlrpc.client.ServerProxy:
 
 def fetch(url: str) -> list[dict]:
     """
-    Fetch all torrents from rTorrent via d.multicall2 and return display dicts
-    whose keys exactly match the schema expected by build_list_block() in
+    Fetch all torrents from rTorrent via d.multicall.filtered and return display
+    dicts whose keys exactly match the schema expected by build_list_block() in
     silo-dashboard.py (same as build_rows() output).
+
+    Tracker data is refreshed from RT via system.multicall at most once every
+    _TRACKER_CACHE_TTL seconds (default 300 s), then merged into each row's
+    'raw' sub-dict without additional per-call XMLRPC traffic.
 
     Returns [] on any connection or XMLRPC error — caller shows last cached list.
     """
+    global _tracker_cache, _tracker_cache_time
     try:
         proxy = connect(url)
         # d.multicall.filtered signature: (view, filter_cmd, filter_value_CONSUMED, field...)
@@ -277,28 +356,36 @@ def fetch(url: str) -> list[dict]:
                 eta_secs = (size_bytes - completed_b) // dl_rate
 
             category = label or "-"
-            tracker  = "-"  # d.tracker_domain= not available on this rTorrent build
+            complete = size_bytes > 0 and completed_b >= size_bytes
 
             # raw sub-dict: must have state/progress/dlspeed/upspeed so that
             # draw_header_full_compact() can compute aggregate stats from
-            # rt_cached_torrents = [r["raw"] for r in rows]
+            # rt_cached_torrents = [r["raw"] for r in rows].
+            # tracker/trackers* fields are filled in after the loop via the
+            # module-level TTL tracker cache (_tracker_cache).
             raw = {
-                "hash":      hash_val,
-                "name":      name,
-                "state":     api_state,
-                "progress":  progress_f,
-                "dlspeed":   dl_rate,
-                "upspeed":   up_rate,
-                "size":      size_bytes,
-                "ratio":     ratio_float,
-                "eta":       eta_secs,      # sort_key reads raw.get("eta")
-                "category":  category,
-                "tags":      label or "-",
-                "added_on":  int(created) if created else 0,
-                "tracker":   tracker,
-                "directory": directory,
-                "base_path": base_path,   # d.base_path= = full path to file or dir
-                "message":   message,
+                "hash":              hash_val,
+                "name":              name,
+                "state":             api_state,
+                "progress":          progress_f,
+                "dlspeed":           dl_rate,
+                "upspeed":           up_rate,
+                "size":              size_bytes,
+                "ratio":             ratio_float,
+                "eta":               eta_secs,
+                "category":          category,
+                "tags":              label or "-",
+                "added_on":          int(created) if created else 0,
+                "tracker":           "-",   # filled after tracker cache refresh
+                "trackers":          [],    # filled after tracker cache refresh
+                "trackers_http":     [],    # filled after tracker cache refresh
+                "trackers_count":    0,     # filled after tracker cache refresh
+                "real_trackers_count": 0,   # filled after tracker cache refresh
+                "directory":         directory,
+                "base_path":         base_path,
+                "message":           message,
+                "complete":          complete,
+                "hashing":           hashing,
             }
 
             rows.append({
@@ -319,7 +406,7 @@ def fetch(url: str) -> list[dict]:
                 "eta":          _eta_str(eta_secs),
                 "added":        _added_str(created),
                 "added_short":  _added_short_str(created),
-                "tracker":      tracker,
+                "tracker":      "-",  # filled after tracker cache refresh
                 "category":     category,
                 "tags":         label or "-",
                 "hash":         hash_val,
@@ -327,6 +414,40 @@ def fetch(url: str) -> list[dict]:
             })
         except Exception:
             continue  # skip malformed entries; don't crash the whole fetch
+
+    # ── Tracker enrichment ────────────────────────────────────────────────────
+    # Refresh module-level tracker cache when TTL has expired, then merge
+    # tracker data into each row's raw dict without per-torrent XMLRPC calls.
+    if rows:
+        now = time.time()
+        if now - _tracker_cache_time >= _TRACKER_CACHE_TTL:
+            try:
+                hashes = [r["hash"] for r in rows]
+                _tracker_cache = _fetch_tracker_batch(proxy, hashes)
+                _tracker_cache_time = now
+            except Exception:
+                pass  # keep stale cache; enrich with whatever we have
+
+        for row in rows:
+            h        = row["hash"]
+            trackers = _tracker_cache.get(h, [])
+            working  = [t for t in trackers if t["status"] == "working"]
+            # Primary tracker: first working, else first any, else empty
+            primary_url = (
+                working[0]["url"] if working
+                else trackers[0]["url"] if trackers
+                else ""
+            )
+            domain = _url_domain(primary_url) if primary_url else "-"
+            http_urls = [t["url"] for t in trackers if t["url"].startswith("http")]
+
+            raw = row["raw"]
+            raw["tracker"]             = domain
+            raw["trackers"]            = trackers
+            raw["trackers_http"]       = http_urls
+            raw["trackers_count"]      = len(trackers)
+            raw["real_trackers_count"] = len(working)
+            row["tracker"]             = domain
 
     return rows
 

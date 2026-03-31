@@ -60,7 +60,7 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.3.5"
+VERSION = "2.4.0"
 LAST_UPDATED = "2026-03-28"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -4089,7 +4089,17 @@ def main() -> int:
                         max_rows = max(10, shutil.get_terminal_size((100, 30)).lines - 15)
                         if active_label == "Info": content_lines = render_info_lines(selected_row, tab_width)
                         elif active_label == "Trackers":
-                            if _tab_rt_proxy is not None:
+                            # For rTorrent: prefer cached tracker data from the
+                            # cache daemon (raw["trackers"]), falling back to a
+                            # live XMLRPC call only when the cache has no entry.
+                            _cached_trackers = (
+                                (selected_row.get("raw") or {}).get("trackers")
+                                if _tab_rt_proxy is not None
+                                else None
+                            )
+                            if _cached_trackers is not None:
+                                trackers = _cached_trackers
+                            elif _tab_rt_proxy is not None:
                                 trackers = _rt_client.fetch_trackers(_tab_rt_proxy, selection_hash)
                             else:
                                 trackers = fetch_trackers(opener, api_url, selection_hash)
