@@ -1252,11 +1252,12 @@ def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
     qb_api = str(qb_profile.get("webapi_version") or "").strip()
     qb_profile_str = ""
     if qb_app or qb_api:
+        _app_label, _api_label = ("rt", "lt") if client_label == "rt" else ("app", "api")
         qb_bits = []
         if qb_app:
-            qb_bits.append(f"app {qb_app}")
+            qb_bits.append(f"{_app_label} {qb_app}")
         if qb_api:
-            qb_bits.append(f"api {qb_api}")
+            qb_bits.append(f"{_api_label} {qb_api}")
         qb_profile_str = f"  {colors.FG_TERTIARY}{' / '.join(qb_bits)}{colors.RESET}"
     err = str(cache_info.get("last_error") or "")
     err_str = f"  {colors.ERROR}err:{err[:25]}{colors.RESET}" if err else ""
@@ -3060,6 +3061,16 @@ def main() -> int:
     rt_fetch_interval = 5.0
     rt_cache_hit_count  = 0   # reads served from daemon cache file (mtime-guarded)
     rt_direct_hit_count = 0   # reads served via direct XMLRPC fallback
+    _rt_profile: dict = {}    # {app_version: rTorrent ver, webapi_version: libtorrent ver}
+    if rt_url and _RT_AVAILABLE:
+        try:
+            _p = _rt_client.connect(rt_url)
+            _rt_profile = {
+                "app_version":   _p.system.client_version(),
+                "webapi_version": _p.system.library_version(),
+            }
+        except Exception:
+            pass
 
     # rTorrent cache daemon paths (written by silo-rt-cache-daemon.py)
     _rt_cache_base    = Path.home() / ".cache" / "silo-rt"
@@ -3972,7 +3983,7 @@ def main() -> int:
                     "items": _rt_meta.get("items"),
                     "last_error": _rt_meta.get("last_error", ""),
                     "active_leases": _rt_meta.get("active_leases", 0),
-                    "qb_profile": {},       # no qBit profile for rTorrent
+                    "qb_profile": _rt_profile,
                     "fast_refresh_interval": 0,
                     "no_daemon": False,
                     "client_label": "rt",
