@@ -1247,6 +1247,7 @@ def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
     age_str = f"age {float(age):.1f}s" if age is not None else "age ?"
     items = cache_info.get("items")
     items_str = f"  {colors.FG_TERTIARY}{items} items{colors.RESET}" if items is not None else ""
+    client_label = cache_info.get("client_label", "qbit")
     qb_profile = cache_info.get("qb_profile") or {}
     qb_app = str(qb_profile.get("app_version") or "").strip()
     qb_api = str(qb_profile.get("webapi_version") or "").strip()
@@ -1270,7 +1271,6 @@ def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
         else f"  {colors.FG_TERTIARY}fast=off{colors.RESET}"
     )
     no_daemon_str = f"  {colors.FG_TERTIARY}[no-daemon]{colors.RESET}" if cache_info.get("no_daemon") else ""
-    client_label = cache_info.get("client_label", "qbit")
     return (
         f"{colors.FG_SECONDARY}Cache:{colors.RESET} {dot} {colors.FG_TERTIARY}{path_short}{colors.RESET}"
         f"  {colors.FG_SECONDARY}bulk={colors.YELLOW}{interval_str}{colors.RESET}"
@@ -2967,6 +2967,8 @@ def main() -> int:
     parser.add_argument("--daemon-ping-interval", type=float, default=5.0, metavar="SECS",
                         help="How often to re-ping the daemon while cache remains stale (default: 5).")
     parser.add_argument("--mediainfo-cache-dir", type=Path, default=None, help="Override mediainfo cache directory (default: ~/.logs/media_qc/cache/mediainfo, or QBIT_MEDIAINFO_CACHE_DIR env).")
+    parser.add_argument("--rt-interval", type=float, default=30.0, metavar="SECS",
+                        help="rTorrent cache poll interval in seconds (default: 30).")
     parser.add_argument("--client", default=os.environ.get("SILO_DEFAULT_CLIENT", "qbit"),
                         choices=["qbit", "rtorrent", "sabnzbd"],
                         help="Initial active client (default: qbit, or SILO_DEFAULT_CLIENT env).")
@@ -3058,7 +3060,7 @@ def main() -> int:
     rt_cached_rows: list[dict] = []
     rt_cached_torrents: list[dict] = []
     rt_cache_time = 0.0
-    rt_fetch_interval = 5.0
+    rt_fetch_interval = args.rt_interval
     rt_cache_hit_count  = 0   # reads served from daemon cache file (mtime-guarded)
     rt_direct_hit_count = 0   # reads served via direct XMLRPC fallback
     _rt_profile: dict = {}    # {app_version: rTorrent ver, webapi_version: libtorrent ver}
@@ -3800,7 +3802,7 @@ def main() -> int:
                             lock_file=_rt_lock_file,
                             log_file=_rt_log_file,
                             extra_args=["--xmlrpc-url", rt_url] if rt_url else None,
-                            default_interval=5.0,
+                            default_interval=rt_fetch_interval,
                             min_interval=3.0,
                             max_interval=30.0,
                             idle_grace=120.0,
