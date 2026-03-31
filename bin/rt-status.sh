@@ -216,14 +216,17 @@ print_dashboard() {
   local stopped_dl="${10}"
   local total="${11}"
   local interval_s="${12}"
+  local show_unexpected="${13}"
 
-  local sep="──────────────────────"
+  local sep="────────────────────────"
 
   printf '── rTorrent v%s ──\n' "$SCRIPT_VERSION"
   printf '%s\n' "$ts"
   printf '%s\n' "$sep"
   printf '%-12s : %5s\n' "checking"    "$checking"
   printf '%-12s : %5s\n' "error"       "$error"
+  printf '%-12s : %5s\n' "missing"     "-"
+  printf '%-12s : %5s\n' "moving"      "-"
   printf '%-12s : %5s\n' "downloading" "$down"
   printf '%-12s : %5s\n' "stalledDL"   "$stalled_dl"
   printf '%-12s : %5s\n' "seeding(up)" "$seeding_up"
@@ -231,6 +234,10 @@ print_dashboard() {
   printf '%-12s : %5s\n' "uploading"   "$uploading"
   printf '%-12s : %5s\n' "stoppedUP"   "$stopped_up"
   printf '%-12s : %5s\n' "stoppedDL"   "$stopped_dl"
+  printf '%-12s : %5s\n' "queuedUP"    "-"
+  if [[ "$show_unexpected" -eq 1 ]]; then
+    printf '%-12s : %5s\n' "unexpected↓" "-"
+  fi
   printf '%s\n' "$sep"
   printf '%-12s : %5s\n' "total"       "$total"
   printf '%s\n' "$sep"
@@ -263,9 +270,10 @@ while true; do
       printf '\033[2J\033[H'
       printf '── rTorrent v%s ── ERROR\n' "$SCRIPT_VERSION"
       printf '%s\n' "$_err_ts"
-      printf '──────────────────────\n'
+      printf '────────────────────────\n'
       printf '%-12s : %s\n' "error" "$FETCH_ERROR"
-      printf '──────────────────────\n'
+      printf '%-12s : %5s\n' "total" "-"
+      printf '────────────────────────\n'
       printf '%-12s : %4ss\n' "interval" "$INTERVAL_S"
       _FORCE_REDRAW=0
     else
@@ -310,7 +318,7 @@ while true; do
       "$CHECKING" "$ERROR" "$DOWN" "$STALLED_DL" \
       "$SEEDING_UP" "$STALLED_UP" "$UPLOADING" \
       "$STOPPED_UP" "$STOPPED_DL" \
-      "$TOTAL" "$INTERVAL_S"
+      "$TOTAL" "$INTERVAL_S" 0
   else
     printf '%s checking=%s error=%s downloading=%s stalledDL=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s stoppedDL=%s total=%s top=%s\n' \
       "$(date '+%F %T')" \
