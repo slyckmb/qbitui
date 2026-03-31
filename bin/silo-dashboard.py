@@ -3058,6 +3058,8 @@ def main() -> int:
     rt_cached_torrents: list[dict] = []
     rt_cache_time = 0.0
     rt_fetch_interval = 5.0
+    rt_cache_hit_count  = 0   # reads served from daemon cache file (mtime-guarded)
+    rt_direct_hit_count = 0   # reads served via direct XMLRPC fallback
 
     # rTorrent cache daemon paths (written by silo-rt-cache-daemon.py)
     _rt_cache_base    = Path.home() / ".cache" / "silo-rt"
@@ -3819,6 +3821,7 @@ def main() -> int:
                             _rt_cache_mtime = _cf_mtime
                             rt_cache_time = now
                             _loaded_from_cache = True
+                            rt_cache_hit_count += 1
                     except Exception:
                         pass
 
@@ -3831,6 +3834,7 @@ def main() -> int:
                                 rt_cached_rows = _rt_rows
                                 rt_cached_torrents = [r.get("raw", {}) for r in _rt_rows]
                                 data_changed = True
+                            rt_direct_hit_count += 1
                         except Exception:
                             pass
                         rt_cache_time = now
@@ -3961,8 +3965,8 @@ def main() -> int:
                     "enabled": _CC_AVAILABLE and _rt_daemon_script.exists(),
                     "base_path": str(_rt_cache_base),
                     "interval_s": _rt_meta.get("effective_interval_s"),
-                    "cache_hits": 0,        # rt: all served from cache file
-                    "direct_hits": 0,
+                    "cache_hits": rt_cache_hit_count,
+                    "direct_hits": rt_direct_hit_count,
                     "daemon_running": _rt_alive,
                     "cache_age_s": _rt_age,
                     "items": _rt_meta.get("items"),
