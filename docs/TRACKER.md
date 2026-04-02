@@ -1,7 +1,31 @@
 # silo Project Tracker
 
-**Last updated:** 2026-03-28
+**Last updated:** 2026-04-02
 **Reviewed against:** actual code in `bin/`, `config/`, `silo` dispatcher
+
+---
+
+## Completed This Session (2026-04-02)
+
+| Item | Status |
+|------|--------|
+| RT cache tracker enrichment — real tracker data in cached rows | ✅ DONE |
+| Batch tracker fetch via `system.multicall` (500 hashes/req, 300s TTL) | ✅ DONE |
+| Fix `t.scrape_success=` breakage (field absent on this rTorrent build) | ✅ DONE |
+| RT cache header — version strings + hit counters (parity with qBit) | ✅ DONE |
+| Fix `UnboundLocalError: client_label` crash in `_fmt_cache_status_line` | ✅ DONE |
+| Default RT poll interval 30s; `--rt-interval` CLI flag | ✅ DONE |
+| `cycle_tabs()` fix — pass `active_client` + `rt_proxy` to `resolve_available_tabs` | ✅ DONE |
+| Fix `d.base_path=` multicall breakage (unsupported field); compute from `directory+name` | ✅ DONE |
+| RT cache daemon docker-exec fallback transport when `localhost:18000` broken | ✅ DONE |
+| Dashboard fail-closed — remove silent XMLRPC fallback in daemon/cache mode | ✅ DONE |
+| `--rt-direct` flag for opt-in live polling | ✅ DONE |
+| `active_transport`, `using_fallback`, `primary_failures` in cache meta | ✅ DONE |
+| Fix `_write_meta` merge order so `_live_extra` overwrites stale persisted state | ✅ DONE |
+| `silo_cache_common` live mutable `extra_meta` reference | ✅ DONE |
+| `_rt_cache_max_age` scales with poll interval (×3, min 30s) | ✅ DONE |
+| Silo → Docker agent coordination doc (`docs/agent-comms/`) | ✅ DONE |
+| Three-agent shared comms file (`/tmp/cr-docker-*-rt-hardening-shared-comms-*.md`) | ✅ DONE |
 
 ---
 
@@ -114,9 +138,70 @@ silo-dashboard.py
 
 silo-sabnzbd.py            (standalone TUI — imports silo_client_sab)
 
-silo-rt-cache-daemon.py    (rTorrent background poller)
+silo-rt-cache-daemon.py    (rTorrent background poller — see RT Cache below)
 silo_cache_common.py       (generic daemon infrastructure)
 ```
+
+---
+
+## Architecture: RT Cache & Transport Hardening
+
+### Cache files
+
+| File | Contents |
+|------|----------|
+| `~/.cache/silo-rt/torrents.json` | Array of display dicts, each with a `raw` sub-dict |
+| `~/.cache/silo-rt/torrents.meta.json` | Daemon health metadata |
+
+### Key `raw` fields per torrent (stable contract)
+
+| Field | Description |
+|-------|-------------|
+| `tracker` | Primary tracker hostname |
+| `trackers` | `list[{url, status, tier}]` — status: `working` / `disabled` / `not working` |
+| `trackers_http` | HTTP announce URLs only |
+| `trackers_count` | Total tracker count |
+| `real_trackers_count` | Count of working trackers (`is_usable=1`) |
+| `complete` | `bool` — all bytes downloaded |
+| `hashing` | `int` — hash-check in progress |
+
+### Key meta fields
+
+| Field | Description |
+|-------|-------------|
+| `active_transport` | URL used for last successful fetch (or `docker://container`) |
+| `using_fallback` | `bool` — `true` when docker exec path is active |
+| `primary_failures` | Consecutive primary transport failures |
+| `cache_age_s` | Seconds since last successful fetch |
+| `last_error` | Last fetch error string |
+| `items` | Torrent count in cache |
+
+### Transport fallback
+
+When `localhost:18000/RPC2` (gluetun port map) breaks after a gluetun restart
+without `rtorrent_vpn` restart, the daemon automatically falls back to:
+
+```bash
+docker exec rtorrent_vpn python3 -c "<stdlib-only XMLRPC script>" http://localhost:8000/RPC2
+```
+
+No silo files need to be in the container. Controlled by:
+- `--fallback-container` (default: `rtorrent_vpn`)
+- `--fallback-inner-url` (default: `http://localhost:8000/RPC2`)
+- `--fallback-threshold` (default: 3 consecutive primary failures)
+
+Structural fix (Docker side): add `depends_on` + restart policy so `rtorrent_vpn`
+auto-restarts when `gluetun` restarts. See `docs/agent-comms/silo-to-docker-2026-04-02.md`.
+
+### Fail-closed policy
+
+- Dashboard in daemon/cache mode: **no silent XMLRPC fallback**. If cache is stale, show stale state.
+- `--rt-direct` flag: opt-in to live XMLRPC polling (diagnostics only).
+- Downstream consumers (hashall `rt state-audit`, monitoring scripts) must read the JSON cache file and fail closed on stale state — do not fall back to hidden live polling.
+
+### Tracker data (TTL-batched)
+
+`silo_client_rt.py` fetches tracker state via `system.multicall` in 500-hash batches (~275 KB req, ~3 MB resp). Module-level TTL cache (`_TRACKER_CACHE_TTL = 300s`) prevents per-repaint hammering. Fields used: `t.url=`, `t.is_usable=`, `t.failed_counter=`. (`t.scrape_success=` is absent on this rTorrent build — do not add it.)
 
 **Client module protocol** (all clients expose the same surface):
 - `NAME: str`, `KEY: str`
