@@ -319,8 +319,12 @@ def run_daemon(
 
     def _write_meta(extra: dict) -> None:
         prev = _read_json(meta_file)
+        # Merge order: base → prev (persisted history) → _live_extra (current
+        # daemon's mutable transport state) → extra (per-fetch result).
+        # _live_extra must come after prev so the running daemon's transport
+        # state overwrites stale values left by a previous daemon instance.
         _atomic_write_text(meta_file, json.dumps(
-            {**base_meta, **_live_extra, **prev, **extra}, indent=2) + "\n")
+            {**base_meta, **prev, **_live_extra, **extra}, indent=2) + "\n")
 
     try:
         if run_once:
