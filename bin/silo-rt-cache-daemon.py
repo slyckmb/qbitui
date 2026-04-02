@@ -11,12 +11,21 @@ URL resolution order:
   2. RTORRENT_XMLRPC_URL environment variable
   3. rtorrent.xmlrpc_url in config/silo.yml
 
+Fallback transport:
+  When the host-side XMLRPC URL is broken (e.g. gluetun port-forwarding
+  lost after container restart), the daemon can fall back to running a
+  stdlib-only inline Python script inside the RT container via docker exec.
+  Enable with --fallback-container (default: rtorrent_vpn).
+  Fallback activates after --fallback-threshold consecutive primary failures.
+
 Usage:
   silo-rt-cache-daemon [--xmlrpc-url URL] [--once] [--status]
 
 Run as a background daemon — the dashboard calls ensure_daemon() automatically
 when the rTorrent client is active and no daemon is running.
 """
+
+__version__ = "1.1.0"
 
 import argparse
 import json
@@ -70,10 +79,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lease-dir",        default=str(_CACHE_BASE / "leases"))
     p.add_argument("--pid-file",         default=str(_CACHE_BASE / "daemon.pid"))
     p.add_argument("--lock-file",        default=str(_CACHE_BASE / "daemon.lock"))
-    p.add_argument("--default-interval", type=float, default=5.0,
-                   help="Normal poll interval in seconds (default: 5)")
-    p.add_argument("--min-interval",     type=float, default=3.0)
-    p.add_argument("--max-interval",     type=float, default=30.0)
+    p.add_argument("--default-interval", type=float, default=30.0,
+                   help="Normal poll interval in seconds (default: 30)")
+    p.add_argument("--min-interval",     type=float, default=10.0)
+    p.add_argument("--max-interval",     type=float, default=120.0)
     p.add_argument("--idle-grace",       type=float, default=120.0,
                    help="Exit after this many idle seconds with no active leases")
     p.add_argument("--sleep-step",       type=float, default=0.5)
@@ -81,6 +90,16 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Fetch once, write cache, then exit (useful for scripts)")
     p.add_argument("--status",           action="store_true",
                    help="Print cache/daemon status as JSON and exit")
+    # ── Fallback transport ────────────────────────────────────────────────────
+    p.add_argument("--fallback-container", default="rtorrent_vpn",
+                   help="Docker container name for docker-exec fallback transport "
+                        "(default: rtorrent_vpn).  Set to empty string to disable.")
+    p.add_argument("--fallback-inner-url", default="http://localhost:8000/RPC2",
+                   help="XMLRPC URL reachable from inside the fallback container "
+                        "(default: http://localhost:8000/RPC2)")
+    p.add_argument("--fallback-threshold", type=int, default=3,
+                   help="Switch to fallback after this many consecutive primary "
+                        "failures (default: 3)")
     return p
 
 
@@ -105,15 +124,67 @@ def main() -> int:
         ))
         return 0
 
-    url = _resolve_url(args.xmlrpc_url)
+    url               = _resolve_url(args.xmlrpc_url)
+    fallback_container = args.fallback_container.strip()
+    fallback_inner_url = args.fallback_inner_url.strip()
+    fallback_threshold = args.fallback_threshold
+
+    # Mutable transport-state dict — written into meta on every _write_meta call
+    # via the live-reference mechanism in silo_cache_common.run_daemon().
+    _transport: dict = {
+        "xmlrpc_url":         url,
+        "fallback_container": fallback_container or "",
+        "active_transport":   url,
+        "using_fallback":     False,
+        "primary_failures":   0,
+    }
+
+    _primary_failures = 0   # nonlocal counter for the fetch closure
 
     def fetch() -> str:
-        rows = _rt.fetch(url)
-        # Treat an empty list as a connection failure so the daemon backs off
-        # rather than overwriting a healthy cache with nothing.
-        if not rows:
-            raise RuntimeError(f"rTorrent returned empty result from {url}")
-        return json.dumps(rows)
+        nonlocal _primary_failures
+
+        # ── Primary transport ─────────────────────────────────────────────────
+        try:
+            rows = _rt.fetch(url)
+            if rows:
+                _primary_failures = 0
+                _transport.update({
+                    "active_transport": url,
+                    "using_fallback":   False,
+                    "primary_failures": 0,
+                })
+                return json.dumps(rows)
+            # Empty list = connection succeeded but RT returned nothing.
+            # Treat as a failure so we don't overwrite a healthy cache.
+            _primary_failures += 1
+        except Exception:
+            _primary_failures += 1
+
+        _transport["primary_failures"] = _primary_failures
+
+        # ── Fallback transport (docker exec) ──────────────────────────────────
+        if fallback_container and _primary_failures >= fallback_threshold:
+            try:
+                rows = _rt.fetch_docker_exec(fallback_container, fallback_inner_url)
+                if rows:
+                    _transport.update({
+                        "active_transport": f"docker://{fallback_container}",
+                        "using_fallback":   True,
+                        "primary_failures": _primary_failures,
+                    })
+                    return json.dumps(rows)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"all transports failed — primary failures: {_primary_failures}, "
+                    f"fallback error: {exc}"
+                ) from exc
+
+        raise RuntimeError(
+            f"rTorrent returned empty result from {url} "
+            f"(primary_failures={_primary_failures}, "
+            f"fallback={'disabled' if not fallback_container else 'threshold not reached'})"
+        )
 
     return _cc.run_daemon(
         fetch_fn=fetch,
@@ -128,7 +199,7 @@ def main() -> int:
         idle_grace=args.idle_grace,
         sleep_step=args.sleep_step,
         run_once=args.once,
-        extra_meta={"xmlrpc_url": url},
+        extra_meta=_transport,   # live mutable reference
     )
 
 

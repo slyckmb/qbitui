@@ -11,7 +11,9 @@ build_narrow_list_block() in silo-dashboard.py expect (same schema as
 build_rows() output).
 """
 
+import json
 import os
+import subprocess
 import time
 import urllib.parse
 import xmlrpc.client
@@ -28,7 +30,7 @@ except Exception:
 
 NAME    = "rTorrent"
 KEY     = "rtorrent"   # key used in active_client comparisons
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 
 # ── Module-level tracker cache ───────────────────────────────────────────────
 # Populated by _fetch_tracker_batch() inside fetch(); persists across daemon
@@ -297,70 +299,55 @@ def connect(url: str) -> xmlrpc.client.ServerProxy:
 
 # ── Fetch ────────────────────────────────────────────────────────────────────
 
-def fetch(url: str) -> list[dict]:
+def _process_results(
+    results: list,
+    proxy: xmlrpc.client.ServerProxy | None = None,
+) -> list[dict]:
     """
-    Fetch all torrents from rTorrent via d.multicall.filtered and return display
-    dicts whose keys exactly match the schema expected by build_list_block() in
-    silo-dashboard.py (same as build_rows() output).
+    Convert raw d.multicall.filtered result rows into display dicts and enrich
+    with tracker data.
 
-    Tracker data is refreshed from RT via system.multicall at most once every
-    _TRACKER_CACHE_TTL seconds (default 300 s), then merged into each row's
-    'raw' sub-dict without additional per-call XMLRPC traffic.
-
-    Returns [] on any connection or XMLRPC error — caller shows last cached list.
+    proxy — live ServerProxy used to refresh the tracker cache.  Pass None
+    when the results came from a fallback path (e.g. docker exec); stale
+    module-level tracker cache is still applied, just not refreshed.
     """
     global _tracker_cache, _tracker_cache_time
-    try:
-        proxy = connect(url)
-        # d.multicall.filtered signature: (view, filter_cmd, filter_value_CONSUMED, field...)
-        # arg3 is silently consumed — pass "d.hash=" twice so real data starts at index 0.
-        # view="" = all downloads; filter_cmd="" = no filtering.
-        results = proxy.d.multicall.filtered("", "", "d.hash=", *_MULTICALL_FIELDS)
-    except Exception:
-        return []
 
-    rows = []
+    rows: list[dict] = []
     for item in results:
         try:
-            hash_val     = str(item[_F_HASH]).lower()  # normalise to lowercase
-            name         = str(item[_F_NAME])
-            size_bytes   = int(item[_F_SIZE])   or 0
-            completed_b  = int(item[_F_COMPLETED]) or 0
-            up_rate      = int(item[_F_UPRATE])  or 0
-            dl_rate      = int(item[_F_DLRATE])  or 0
-            ratio_raw    = int(item[_F_RATIO])   or 0   # stored as ratio * 1000
-            state        = int(item[_F_STATE])   or 0
-            is_active    = int(item[_F_ACTIVE])  or 0
-            message      = str(item[_F_MESSAGE] or "")
-            label        = str(item[_F_CUSTOM1] or "")  # ruTorrent label
-            peers        = int(item[_F_PEERS])   or 0
-            created      = item[_F_CREATED]
-            directory    = str(item[_F_DIRECTORY] or "")
-            hashing      = int(item[_F_HASHING]) if len(item) > _F_HASHING else 0
-            base_path    = _compute_base_path(directory, name)
+            hash_val    = str(item[_F_HASH]).lower()
+            name        = str(item[_F_NAME])
+            size_bytes  = int(item[_F_SIZE])      or 0
+            completed_b = int(item[_F_COMPLETED]) or 0
+            up_rate     = int(item[_F_UPRATE])    or 0
+            dl_rate     = int(item[_F_DLRATE])    or 0
+            ratio_raw   = int(item[_F_RATIO])     or 0
+            state       = int(item[_F_STATE])     or 0
+            is_active   = int(item[_F_ACTIVE])    or 0
+            message     = str(item[_F_MESSAGE] or "")
+            label       = str(item[_F_CUSTOM1] or "")
+            peers       = int(item[_F_PEERS])     or 0
+            created     = item[_F_CREATED]
+            directory   = str(item[_F_DIRECTORY] or "")
+            hashing     = int(item[_F_HASHING]) if len(item) > _F_HASHING else 0
+            base_path   = _compute_base_path(directory, name)
 
-            # Derived values
             ratio_float  = ratio_raw / 1000.0
             api_state    = _normalize_state(
                 state, is_active, message, size_bytes, completed_b,
-                dl_rate, up_rate, hashing
+                dl_rate, up_rate, hashing,
             )
             progress_f   = (completed_b / size_bytes) if size_bytes > 0 else 0.0
             progress_pct = int(progress_f * 100)
-
-            eta_secs = 0
+            eta_secs     = 0
             if dl_rate > 0 and size_bytes > completed_b:
                 eta_secs = (size_bytes - completed_b) // dl_rate
 
             category = label or "-"
             complete = size_bytes > 0 and completed_b >= size_bytes
 
-            # raw sub-dict: must have state/progress/dlspeed/upspeed so that
-            # draw_header_full_compact() can compute aggregate stats from
-            # rt_cached_torrents = [r["raw"] for r in rows].
-            # tracker/trackers* fields are filled in after the loop via the
-            # module-level TTL tracker cache (_tracker_cache).
-            raw = {
+            raw: dict = {
                 "hash":              hash_val,
                 "name":              name,
                 "state":             api_state,
@@ -373,11 +360,11 @@ def fetch(url: str) -> list[dict]:
                 "category":          category,
                 "tags":              label or "-",
                 "added_on":          int(created) if created else 0,
-                "tracker":           "-",   # filled after tracker cache refresh
-                "trackers":          [],    # filled after tracker cache refresh
-                "trackers_http":     [],    # filled after tracker cache refresh
-                "trackers_count":    0,     # filled after tracker cache refresh
-                "real_trackers_count": 0,   # filled after tracker cache refresh
+                "tracker":           "-",
+                "trackers":          [],
+                "trackers_http":     [],
+                "trackers_count":    0,
+                "real_trackers_count": 0,
                 "directory":         directory,
                 "base_path":         base_path,
                 "message":           message,
@@ -388,7 +375,7 @@ def fetch(url: str) -> list[dict]:
             rows.append({
                 "name":         name,
                 "save_path":    directory.rstrip("/") or "-",
-                "nohl":         " ",  # rTorrent has no ~nohl concept
+                "nohl":         " ",
                 "state":        api_state,
                 "st":           _STATE_CODE.get(api_state, "?"),
                 "progress":     f"{progress_pct}%",
@@ -397,47 +384,43 @@ def fetch(url: str) -> list[dict]:
                 "ratio":        f"{ratio_float:.2f}",
                 "dlspeed":      _speed_str(dl_rate),
                 "upspeed":      _speed_str(up_rate),
-                "uploaded_raw": 0,   # rTorrent session upload not in multicall
-                "seeds":        0,   # no seeds/peers split in multicall; use peers
+                "uploaded_raw": 0,
+                "seeds":        0,
                 "peers":        peers,
                 "eta":          _eta_str(eta_secs),
                 "added":        _added_str(created),
                 "added_short":  _added_short_str(created),
-                "tracker":      "-",  # filled after tracker cache refresh
+                "tracker":      "-",
                 "category":     category,
                 "tags":         label or "-",
                 "hash":         hash_val,
                 "raw":          raw,
             })
         except Exception:
-            continue  # skip malformed entries; don't crash the whole fetch
+            continue
 
     # ── Tracker enrichment ────────────────────────────────────────────────────
-    # Refresh module-level tracker cache when TTL has expired, then merge
-    # tracker data into each row's raw dict without per-torrent XMLRPC calls.
     if rows:
         now = time.time()
-        if now - _tracker_cache_time >= _TRACKER_CACHE_TTL:
+        if proxy is not None and now - _tracker_cache_time >= _TRACKER_CACHE_TTL:
             try:
                 hashes = [r["hash"] for r in rows]
                 _tracker_cache = _fetch_tracker_batch(proxy, hashes)
                 _tracker_cache_time = now
             except Exception:
-                pass  # keep stale cache; enrich with whatever we have
+                pass  # keep stale cache
 
         for row in rows:
             h        = row["hash"]
             trackers = _tracker_cache.get(h, [])
             working  = [t for t in trackers if t["status"] == "working"]
-            # Primary tracker: first working, else first any, else empty
             primary_url = (
                 working[0]["url"] if working
                 else trackers[0]["url"] if trackers
                 else ""
             )
-            domain = _url_domain(primary_url) if primary_url else "-"
+            domain    = _url_domain(primary_url) if primary_url else "-"
             http_urls = [t["url"] for t in trackers if t["url"].startswith("http")]
-
             raw = row["raw"]
             raw["tracker"]             = domain
             raw["trackers"]            = trackers
@@ -447,6 +430,62 @@ def fetch(url: str) -> list[dict]:
             row["tracker"]             = domain
 
     return rows
+
+
+def fetch(url: str) -> list[dict]:
+    """
+    Fetch all torrents via host-accessible XMLRPC URL.
+
+    Returns [] on any connection or XMLRPC error.
+    """
+    try:
+        proxy   = connect(url)
+        results = proxy.d.multicall.filtered("", "", "d.hash=", *_MULTICALL_FIELDS)
+    except Exception:
+        return []
+    return _process_results(results, proxy)
+
+
+def fetch_docker_exec(
+    container: str = "rtorrent_vpn",
+    inner_url: str = "http://localhost:8000/RPC2",
+    timeout: int   = 60,
+) -> list[dict]:
+    """
+    Fetch all torrents by running a stdlib-only XMLRPC call inside the named
+    container via 'docker exec'.  Used as a fallback when the host-side transport
+    (e.g. localhost:18000) is broken but the container-local port is healthy.
+
+    No silo code needs to be present inside the container — only stdlib
+    xmlrpc.client and json are used in the inline script.
+
+    Returns [] on any failure.
+    Tracker cache is NOT refreshed (no live proxy available), but existing
+    stale module-level cache is applied to all rows.
+    """
+    # Build field list for the inline call — mirrors _MULTICALL_FIELDS exactly.
+    # The consumed arg3 ('d.hash=') is prepended separately inside the script.
+    fields_repr = repr(list(_MULTICALL_FIELDS))
+    code = (
+        "import xmlrpc.client,json,sys;"
+        f"p=xmlrpc.client.ServerProxy({inner_url!r},allow_none=True);"
+        f"r=p.d.multicall.filtered('','','d.hash=',*{fields_repr});"
+        "print(json.dumps(r,default=str))"
+    )
+    try:
+        proc = subprocess.run(
+            ["docker", "exec", container, "python3", "-c", code],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"docker exec exited {proc.returncode}: "
+                f"{proc.stderr.strip()[:200]}"
+            )
+        results = json.loads(proc.stdout)
+    except Exception:
+        return []
+    return _process_results(results, proxy=None)
 
 
 # ── Per-torrent detail fetchers ──────────────────────────────────────────────

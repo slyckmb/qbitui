@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 
 # ── Utilities ────────────────────────────────────────────────────────────────
@@ -312,12 +312,15 @@ def run_daemon(
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(pid_file, f"{os.getpid()}\n")
 
-    base_meta: dict = {"daemon_pid": os.getpid(), "cache_file": str(cache_file),
-                       **(extra_meta or {})}
+    base_meta: dict = {"daemon_pid": os.getpid(), "cache_file": str(cache_file)}
+    # _live_extra is kept as a reference — the caller can mutate the dict
+    # between fetch cycles to update transport state visible in the meta file.
+    _live_extra: dict = extra_meta if extra_meta is not None else {}
 
     def _write_meta(extra: dict) -> None:
         prev = _read_json(meta_file)
-        _atomic_write_text(meta_file, json.dumps({**base_meta, **prev, **extra}, indent=2) + "\n")
+        _atomic_write_text(meta_file, json.dumps(
+            {**base_meta, **_live_extra, **prev, **extra}, indent=2) + "\n")
 
     try:
         if run_once:

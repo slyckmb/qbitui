@@ -60,7 +60,7 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.4.1"
+VERSION = "2.5.0"
 LAST_UPDATED = "2026-03-28"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -2969,6 +2969,17 @@ def main() -> int:
     parser.add_argument("--mediainfo-cache-dir", type=Path, default=None, help="Override mediainfo cache directory (default: ~/.logs/media_qc/cache/mediainfo, or QBIT_MEDIAINFO_CACHE_DIR env).")
     parser.add_argument("--rt-interval", type=float, default=30.0, metavar="SECS",
                         help="rTorrent cache poll interval in seconds (default: 30).")
+    parser.add_argument("--rt-direct", action="store_true",
+                        help="Disable daemon/cache mode and poll RT XMLRPC directly on "
+                             "every refresh.  Use for diagnostics only — not safe under "
+                             "RT overload.")
+    parser.add_argument("--rt-fallback-container", default="rtorrent_vpn", metavar="NAME",
+                        help="Docker container for daemon fallback transport when host "
+                             "XMLRPC is broken (default: rtorrent_vpn).  Empty to disable.")
+    parser.add_argument("--rt-fallback-inner-url", default="http://localhost:8000/RPC2",
+                        metavar="URL",
+                        help="XMLRPC URL inside the fallback container "
+                             "(default: http://localhost:8000/RPC2).")
     parser.add_argument("--client", default=os.environ.get("SILO_DEFAULT_CLIENT", "qbit"),
                         choices=["qbit", "rtorrent", "sabnzbd"],
                         help="Initial active client (default: qbit, or SILO_DEFAULT_CLIENT env).")
@@ -3083,7 +3094,7 @@ def main() -> int:
     _rt_lock_file     = _rt_cache_base / "daemon.lock"
     _rt_log_file      = _rt_cache_base / "daemon.log"
     _rt_daemon_script = Path(__file__).parent / "silo-rt-cache-daemon.py"
-    _rt_cache_max_age = 10.0          # treat cache stale after this many seconds
+    _rt_cache_max_age = max(rt_fetch_interval * 3, 30.0)  # stale threshold scales with interval
     _rt_daemon_ping_interval = 15.0   # how often to re-ping ensure_daemon
     _rt_last_daemon_ping = 0.0
 
@@ -3801,10 +3812,15 @@ def main() -> int:
                             pid_file=_rt_pid_file,
                             lock_file=_rt_lock_file,
                             log_file=_rt_log_file,
-                            extra_args=["--xmlrpc-url", rt_url] if rt_url else None,
+                            extra_args=[
+                                *(["--xmlrpc-url", rt_url] if rt_url else []),
+                                *(["--fallback-container", args.rt_fallback_container]
+                                  if args.rt_fallback_container else []),
+                                "--fallback-inner-url", args.rt_fallback_inner_url,
+                            ],
                             default_interval=rt_fetch_interval,
-                            min_interval=3.0,
-                            max_interval=30.0,
+                            min_interval=10.0,
+                            max_interval=120.0,
                             idle_grace=120.0,
                         )
                         # Write a lease so the daemon knows we're active
@@ -3838,8 +3854,12 @@ def main() -> int:
                     except Exception:
                         pass
 
-                # Fall back to direct XMLRPC if cache is absent or too stale
-                if not _loaded_from_cache:
+                # Direct XMLRPC fallback — only when daemon is disabled or
+                # --rt-direct was explicitly requested.  In daemon/cache mode
+                # the cache is the source of truth; silently polling RT on
+                # stale cache makes overload conditions worse.
+                _daemon_mode = _CC_AVAILABLE and _rt_daemon_script.exists()
+                if not _loaded_from_cache and (args.rt_direct or not _daemon_mode):
                     if not rt_cached_rows or (now - rt_cache_time) >= rt_fetch_interval:
                         try:
                             _rt_rows = _rt_client.fetch(rt_url)
@@ -3851,6 +3871,9 @@ def main() -> int:
                         except Exception:
                             pass
                         rt_cache_time = now
+                elif not _loaded_from_cache and _daemon_mode and not rt_cached_rows:
+                    # Daemon mode, cache not yet populated — show empty until daemon primes
+                    pass
 
             # ── SABnzbd fetch ─────────────────────────────────────────────────
             if active_client == "sabnzbd" and _SAB_AVAILABLE and _sab_conn:
