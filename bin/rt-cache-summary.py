@@ -15,10 +15,13 @@ from typing import Any
 
 DEFAULT_DAEMON = Path("/home/michael/dev/tools/silo/bin/silo-rt-cache-daemon.py")
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "silo-rt"
+SCRIPT_NAME = "rt-cache-summary.py"
+SCRIPT_VERSION = "1.0.0"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", action="version", version=f"%(prog)s {SCRIPT_VERSION}")
     parser.add_argument("--cache-file", default=str(DEFAULT_CACHE_DIR / "torrents.json"))
     parser.add_argument("--meta-file", default=str(DEFAULT_CACHE_DIR / "torrents.meta.json"))
     parser.add_argument("--daemon", default=str(DEFAULT_DAEMON))
@@ -151,6 +154,8 @@ def main() -> int:
 
     summary = summarize_rows(rows)
     payload = {
+        "script_name": SCRIPT_NAME,
+        "script_version": SCRIPT_VERSION,
         "ok": bool(rows),
         "freshness": freshness,
         "cache_source": cache_source,
