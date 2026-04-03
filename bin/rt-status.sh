@@ -1,26 +1,40 @@
 #!/usr/bin/env bash
-# Version: 1.0.1
-# rt-watch.sh — rTorrent state dashboard (port of qb-checking-watch.sh)
+# Version: 1.1.0
+# rt-watch.sh — rTorrent state dashboard
 #
-# Polls rTorrent via XMLRPC and displays torrent state counts.
-# Env: RT_CONTAINER, RT_RPC_URL
+# Reads rTorrent state from the shared silo cache by default.
+# Direct XMLRPC access is available only via --direct for one-off diagnostics.
 set -euo pipefail
 
-SCRIPT_VERSION="1.0.1"
+SCRIPT_VERSION="1.1.0"
 RT_CONTAINER="${RT_CONTAINER:-rtorrent_vpn}"
 RT_RPC_URL="${RT_RPC_URL:-http://localhost:8000/}"
+RT_CACHE_SUMMARY="${RT_CACHE_SUMMARY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rt-cache-summary.py}"
+RT_CACHE_DAEMON="${RT_CACHE_DAEMON:-/home/michael/dev/tools/silo/bin/silo-rt-cache-daemon.py}"
+RT_CACHE_PYTHON="${RT_CACHE_PYTHON:-python3}"
+RT_CACHE_MAX_AGE="${RT_CACHE_MAX_AGE:-60}"
 INTERVAL_S=30
 ONCE=0
 UNTIL_CLEAR=0
 MAX_ITERATIONS=0
 DASHBOARD=0
+DIRECT_MODE=0
 
 usage() {
   cat <<USAGE
 Usage: $(basename "$0") [options]
 
 Watches rTorrent torrent state counts (checking/error/downloading/seeding).
-Env: RT_CONTAINER (default: rtorrent_vpn), RT_RPC_URL (default: http://localhost:8000/)
+Default transport is the shared silo RT cache. Use --direct only for one-off
+diagnostics when you intentionally want to hit RT XMLRPC.
+
+Env:
+  RT_CACHE_SUMMARY  Cache summary helper path
+  RT_CACHE_DAEMON   silo-rt-cache-daemon path
+  RT_CACHE_PYTHON   Python interpreter for cache daemon/helper
+  RT_CACHE_MAX_AGE  Fresh-cache threshold in seconds (default: 60)
+  RT_CONTAINER      rTorrent container name for --direct fallback
+  RT_RPC_URL        RT XMLRPC URL for --direct mode (default: http://localhost:8000/)
 
 States:
   checking    — hash check in progress (d.hashing>0)
@@ -39,6 +53,7 @@ Options:
   --until-clear       Exit when checking=0 and downloading=0
   --max-iterations N  Exit after N polling iterations (0=infinite)
   --dashboard         Overwrite-in-place dashboard mode (like watch)
+  --direct            Bypass cache and query RT XMLRPC directly
   -h, --help          Show help
 USAGE
 }
@@ -50,6 +65,7 @@ while [[ $# -gt 0 ]]; do
   --until-clear) UNTIL_CLEAR=1;            shift   ;;
   --max-iterations) MAX_ITERATIONS="${2:-}"; shift 2 ;;
   --dashboard)   DASHBOARD=1;              shift   ;;
+  --direct)      DIRECT_MODE=1;            shift   ;;
   -h|--help)     usage; exit 0 ;;
   *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -68,14 +84,11 @@ _on_exit() {
 trap '_on_exit' EXIT
 
 if [[ "$DASHBOARD" -eq 0 ]]; then
-  echo "watchdog_config interval_s=${INTERVAL_S} once=${ONCE} until_clear=${UNTIL_CLEAR} max_iterations=${MAX_ITERATIONS} container=${RT_CONTAINER}"
+  echo "watchdog_config interval_s=${INTERVAL_S} once=${ONCE} until_clear=${UNTIL_CLEAR} max_iterations=${MAX_ITERATIONS} direct=${DIRECT_MODE} container=${RT_CONTAINER}"
 fi
 
-# ── rTorrent XMLRPC fetch ─────────────────────────────────────────────────────
-# Calls d.multicall2 via host-side XMLRPC first, then docker exec fallback.
-# Returns JSON array of torrent objects.
-# Fields per torrent: hash, state (derived string), progress, down_rate, up_rate, message, label
-_rt_fetch_json() {
+# ── Direct RT XMLRPC fetch (explicit only) ────────────────────────────────────
+_rt_fetch_json_direct() {
   python3 - "$RT_CONTAINER" "$RT_RPC_URL" <<'PYEOF'
 import sys, subprocess, re, json
 
@@ -202,6 +215,14 @@ print(json.dumps(output))
 PYEOF
 }
 
+# ── Shared silo RT cache summary ──────────────────────────────────────────────
+_rt_fetch_cache_summary() {
+  "$RT_CACHE_PYTHON" "$RT_CACHE_SUMMARY" \
+    --daemon "$RT_CACHE_DAEMON" \
+    --python "$RT_CACHE_PYTHON" \
+    --max-age "$RT_CACHE_MAX_AGE"
+}
+
 # ── Dashboard renderer ────────────────────────────────────────────────────────
 print_dashboard() {
   local ts="$1"
@@ -216,14 +237,21 @@ print_dashboard() {
   local stopped_dl="${10}"
   local total="${11}"
   local interval_s="${12}"
+  local show_unexpected="${13}"
+  local transport_label="${14}"
+  local transport_detail="${15}"
 
-  local sep="──────────────────────"
+  local sep="────────────────────────"
 
   printf '── rTorrent v%s ──\n' "$SCRIPT_VERSION"
   printf '%s\n' "$ts"
+  printf '%-12s : %s\n' "transport" "$transport_label"
+  printf '%-12s : %s\n' "cache" "$transport_detail"
   printf '%s\n' "$sep"
   printf '%-12s : %5s\n' "checking"    "$checking"
   printf '%-12s : %5s\n' "error"       "$error"
+  printf '%-12s : %5s\n' "missing"     "-"
+  printf '%-12s : %5s\n' "moving"      "-"
   printf '%-12s : %5s\n' "downloading" "$down"
   printf '%-12s : %5s\n' "stalledDL"   "$stalled_dl"
   printf '%-12s : %5s\n' "seeding(up)" "$seeding_up"
@@ -231,6 +259,10 @@ print_dashboard() {
   printf '%-12s : %5s\n' "uploading"   "$uploading"
   printf '%-12s : %5s\n' "stoppedUP"   "$stopped_up"
   printf '%-12s : %5s\n' "stoppedDL"   "$stopped_dl"
+  printf '%-12s : %5s\n' "queuedUP"    "-"
+  if [[ "$show_unexpected" -eq 1 ]]; then
+    printf '%-12s : %5s\n' "unexpected↓" "-"
+  fi
   printf '%s\n' "$sep"
   printf '%-12s : %5s\n' "total"       "$total"
   printf '%s\n' "$sep"
@@ -247,14 +279,90 @@ while true; do
   iteration=$((iteration + 1))
 
   FETCH_ERROR=""
-  TORRENTS_JSON="[]"
-  _raw=""
-  if ! _raw="$(_rt_fetch_json 2>/dev/null)"; then
-    FETCH_ERROR="fetch_failed"
-  elif [[ -z "$_raw" ]] || ! jq -e . >/dev/null 2>&1 <<<"$_raw"; then
-    FETCH_ERROR="invalid_json"
+  RT_TRANSPORT_LABEL=""
+  RT_TRANSPORT_DETAIL=""
+  CHECKING=0
+  ERROR=0
+  DOWN=0
+  STALLED_DL=0
+  SEEDING_UP=0
+  STALLED_UP=0
+  UPLOADING=0
+  STOPPED_UP=0
+  STOPPED_DL=0
+  TOTAL=0
+  TOP_STATES=""
+
+  if [[ "$DIRECT_MODE" -eq 1 ]]; then
+    TORRENTS_JSON="[]"
+    _raw=""
+    if ! _raw="$(_rt_fetch_json_direct 2>/dev/null)"; then
+      FETCH_ERROR="fetch_failed"
+    elif [[ -z "$_raw" ]] || ! jq -e . >/dev/null 2>&1 <<<"$_raw"; then
+      FETCH_ERROR="invalid_json"
+    else
+      TORRENTS_JSON="$_raw"
+      RT_TRANSPORT_LABEL="direct"
+      RT_TRANSPORT_DETAIL="xmlrpc"
+      read -r CHECKING ERROR DOWN STALLED_DL SEEDING_UP STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
+        [
+          ([.[] | select(.state == "checking")]    | length),
+          ([.[] | select(.state == "error")]       | length),
+          ([.[] | select(.state == "downloading")] | length),
+          ([.[] | select(.state == "stalledDL")]   | length),
+          ([.[] | select(.state == "uploading" or .state == "stalledUP")] | length),
+          ([.[] | select(.state == "stalledUP")]   | length),
+          ([.[] | select(.state == "uploading")]   | length),
+          ([.[] | select(.state == "stoppedUP")]   | length),
+          ([.[] | select(.state == "stoppedDL")]   | length),
+          (length),
+          (
+            group_by(.state)
+            | map({s: .[0].state, c: length})
+            | sort_by(-.c)
+            | .[:8]
+            | map("\(.s)=\(.c)")
+            | join(",")
+          )
+        ] | @tsv
+      ' <<<"$TORRENTS_JSON")"
+    fi
   else
-    TORRENTS_JSON="$_raw"
+    SUMMARY_JSON=""
+    if ! SUMMARY_JSON="$(_rt_fetch_cache_summary 2>/dev/null)"; then
+      FETCH_ERROR="cache_summary_failed"
+    elif [[ -z "$SUMMARY_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$SUMMARY_JSON"; then
+      FETCH_ERROR="invalid_cache_summary"
+    else
+      RT_TRANSPORT_LABEL="cache"
+      RT_TRANSPORT_DETAIL="$(jq -r '
+        [
+          (.freshness // "unknown"),
+          ("age=" + ((.cache_age_s // "?" | tostring | split(".")[0]) + "s")),
+          ("daemon=" + (if .daemon_running then "up" else "down" end)),
+          ("src=" + ((.cache_source // "unknown") | tostring))
+        ] | join(" ")
+      ' <<<"$SUMMARY_JSON")"
+      if [[ "$(jq -r '.ok' <<<"$SUMMARY_JSON")" != "true" ]]; then
+        FETCH_ERROR="$(jq -r '.last_error // .status_error // "cache_missing"' <<<"$SUMMARY_JSON")"
+      else
+        read -r CHECKING ERROR DOWN STALLED_DL STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
+          [
+            (.states.checking // 0),
+            (.states.error // 0),
+            (.states.downloading // 0),
+            (.states.stalledDL // 0),
+            (.states.stalledUP // 0),
+            (.states.uploading // 0),
+            (.states.stoppedUP // 0),
+            (.states.stoppedDL // 0),
+            (.items // 0),
+            ((.top_states // []) | join(","))
+          ] | @tsv
+        ' <<<"$SUMMARY_JSON")"
+        SEEDING_UP=$((STALLED_UP + UPLOADING))
+      fi
+    fi
   fi
 
   if [[ -n "$FETCH_ERROR" ]]; then
@@ -263,9 +371,16 @@ while true; do
       printf '\033[2J\033[H'
       printf '── rTorrent v%s ── ERROR\n' "$SCRIPT_VERSION"
       printf '%s\n' "$_err_ts"
-      printf '──────────────────────\n'
+      if [[ -n "$RT_TRANSPORT_LABEL" ]]; then
+        printf '%-12s : %s\n' "transport" "$RT_TRANSPORT_LABEL"
+      fi
+      if [[ -n "$RT_TRANSPORT_DETAIL" ]]; then
+        printf '%-12s : %s\n' "cache" "$RT_TRANSPORT_DETAIL"
+      fi
+      printf '────────────────────────\n'
       printf '%-12s : %s\n' "error" "$FETCH_ERROR"
-      printf '──────────────────────\n'
+      printf '%-12s : %5s\n' "total" "-"
+      printf '────────────────────────\n'
       printf '%-12s : %4ss\n' "interval" "$INTERVAL_S"
       _FORCE_REDRAW=0
     else
@@ -279,29 +394,6 @@ while true; do
     continue
   fi
 
-  read -r CHECKING ERROR DOWN STALLED_DL SEEDING_UP STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
-    [
-      ([.[] | select(.state == "checking")]    | length),
-      ([.[] | select(.state == "error")]       | length),
-      ([.[] | select(.state == "downloading")] | length),
-      ([.[] | select(.state == "stalledDL")]   | length),
-      ([.[] | select(.state == "uploading" or .state == "stalledUP")] | length),
-      ([.[] | select(.state == "stalledUP")]   | length),
-      ([.[] | select(.state == "uploading")]   | length),
-      ([.[] | select(.state == "stoppedUP")]   | length),
-      ([.[] | select(.state == "stoppedDL")]   | length),
-      (length),
-      (
-        group_by(.state)
-        | map({s: .[0].state, c: length})
-        | sort_by(-.c)
-        | .[:8]
-        | map("\(.s)=\(.c)")
-        | join(",")
-      )
-    ] | @tsv
-  ' <<<"$TORRENTS_JSON")"
-
   if [[ "$DASHBOARD" -eq 1 ]]; then
     printf '\033[2J\033[H'
     _FORCE_REDRAW=0
@@ -310,10 +402,12 @@ while true; do
       "$CHECKING" "$ERROR" "$DOWN" "$STALLED_DL" \
       "$SEEDING_UP" "$STALLED_UP" "$UPLOADING" \
       "$STOPPED_UP" "$STOPPED_DL" \
-      "$TOTAL" "$INTERVAL_S"
+      "$TOTAL" "$INTERVAL_S" 0 \
+      "$RT_TRANSPORT_LABEL" "$RT_TRANSPORT_DETAIL"
   else
-    printf '%s checking=%s error=%s downloading=%s stalledDL=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s stoppedDL=%s total=%s top=%s\n' \
+    printf '%s transport=%s detail=%q checking=%s error=%s downloading=%s stalledDL=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s stoppedDL=%s total=%s top=%s\n' \
       "$(date '+%F %T')" \
+      "$RT_TRANSPORT_LABEL" "$RT_TRANSPORT_DETAIL" \
       "$CHECKING" "$ERROR" "$DOWN" "$STALLED_DL" \
       "$SEEDING_UP" "$STALLED_UP" "$UPLOADING" \
       "$STOPPED_UP" "$STOPPED_DL" \

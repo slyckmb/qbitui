@@ -271,32 +271,40 @@ print_dashboard() {
   local missing="$3"
   local moving="$4"
   local down="$5"
-  local seeding_up="$6"
-  local stopped_dl="$7"
-  local stalled_up="$8"
-  local uploading="$9"
-  local stopped_up="${10}"
-  local queued_up="${11}"
-  local unexpected_down="${12}"
-  local interval_s="${13}"
+  local stalled_dl="$6"
+  local seeding_up="$7"
+  local stopped_dl="$8"
+  local stalled_up="$9"
+  local uploading="${10}"
+  local stopped_up="${11}"
+  local queued_up="${12}"
+  local unexpected_down="${13}"
+  local total="${14}"
+  local interval_s="${15}"
+  local show_unexpected="${16}"
 
-  local sep="──────────────────────"
+  local sep="────────────────────────"
 
   printf '── qBittorrent v%s ──\n' "$SCRIPT_VERSION"
   printf '%s\n' "$ts"
   printf '%s\n' "$sep"
   printf '%-12s : %5s\n' "checking" "$checking"
+  printf '%-12s : %5s\n' "error" "-"
   printf '%-12s : %5s\n' "missing" "$missing"
   printf '%-12s : %5s\n' "moving" "$moving"
   printf '%-12s : %5s\n' "downloading" "$down"
+  printf '%-12s : %5s\n' "stalledDL" "$stalled_dl"
   printf '%-12s : %5s\n' "seeding(up)" "$seeding_up"
-  printf '%-12s : %5s\n' "stoppedDL" "$stopped_dl"
   printf '%-12s : %5s\n' "stalledUP" "$stalled_up"
   printf '%-12s : %5s\n' "uploading" "$uploading"
   printf '%-12s : %5s\n' "stoppedUP" "$stopped_up"
+  printf '%-12s : %5s\n' "stoppedDL" "$stopped_dl"
   printf '%-12s : %5s\n' "queuedUP" "$queued_up"
+  if [[ "$show_unexpected" -eq 1 ]]; then
+    printf '%-12s : %5s\n' "unexpected↓" "$unexpected_down"
+  fi
   printf '%s\n' "$sep"
-  printf '%-12s : %5s\n' "unexpected↓" "$unexpected_down"
+  printf '%-12s : %5s\n' "total" "$total"
   printf '%s\n' "$sep"
   printf '%-12s : %4ss\n' "interval" "$interval_s"
 }
@@ -358,9 +366,10 @@ while true; do
       printf '\033[2J\033[H'
       printf '── qBittorrent v%s ── ERROR\n' "$SCRIPT_VERSION"
       printf '%s\n' "$_err_ts"
-      printf '──────────────────────\n'
+      printf '────────────────────────\n'
       printf '%-12s : %s\n' "error" "$FETCH_ERROR"
-      printf '──────────────────────\n'
+      printf '%-12s : %5s\n' "total" "-"
+      printf '────────────────────────\n'
       printf '%-12s : %4ss\n' "interval" "$INTERVAL_S"
       _FORCE_REDRAW=0
     else
@@ -376,7 +385,7 @@ while true; do
     continue
   fi
 
-  read -r CHECKING MISSING MOVING DOWN UP COUNT_ZERO COUNT_PARTIAL STOPPED_UP STOPPED_DL STALLED_UP UPLOADING QUEUED_UP TOP_STATES <<<"$(jq -r '
+  read -r CHECKING MISSING MOVING DOWN STALLED_DL UP COUNT_ZERO COUNT_PARTIAL STOPPED_UP STOPPED_DL STALLED_UP UPLOADING QUEUED_UP TOTAL TOP_STATES <<<"$(jq -r '
     [
       ([.[] | (.state // "" | ascii_downcase) | select(startswith("checking"))] | length),
       ([.[] | select((.state // "" | ascii_downcase) == "missingfiles")] | length),
@@ -388,6 +397,7 @@ while true; do
         or (.state // "" | ascii_downcase) == "forceddl"
         or (.state // "" | ascii_downcase) == "metadl"
       )] | length),
+      ([.[] | select((.state // "" | ascii_downcase) == "stalleddl")] | length),
       ([.[] | select((.state // "" | ascii_downcase) == "uploading" or (.state // "" | ascii_downcase) == "stalledup")] | length),
       ([.[] | select((.progress // 0) <= 0.0)] | length),
       ([.[] | select((.progress // 0) > 0.0 and (.progress // 0) < 1.0)] | length),
@@ -399,6 +409,7 @@ while true; do
       ([.[] | select((.state // "" | ascii_downcase) == "stalledup")] | length),
       ([.[] | select((.state // "" | ascii_downcase) == "uploading")] | length),
       ([.[] | select((.state // "" | ascii_downcase) == "queuedup")] | length),
+      (length),
       (
         group_by(.state // "UNKNOWN")
         | map({s: (.[0].state // "UNKNOWN"), c: length})
@@ -474,9 +485,9 @@ while true; do
     _FORCE_REDRAW=0
     print_dashboard \
       "$(date '+%F %T')" \
-      "$CHECKING" "$MISSING" "$MOVING" "$DOWN" "$UP" \
+      "$CHECKING" "$MISSING" "$MOVING" "$DOWN" "$STALLED_DL" "$UP" \
       "$STOPPED_DL" "$STALLED_UP" "$UPLOADING" "$STOPPED_UP" "$QUEUED_UP" \
-      "${#UNEXPECTED_DOWN[@]}" "$INTERVAL_S"
+      "${#UNEXPECTED_DOWN[@]}" "$TOTAL" "$INTERVAL_S" "$ENFORCE_PAUSED_DL"
   else
     printf '%s checking=%s missing=%s moving=%s down=%s up=%s unexpected_down=%s paused_now=%s count_zero=%s count_partial=%s top=%s stoppedUP=%s stoppedDL=%s stalledUP=%s uploading=%s queuedUP=%s\n' \
       "$(date '+%F %T')" "$CHECKING" "$MISSING" "$MOVING" "$DOWN" "$UP" "${#UNEXPECTED_DOWN[@]}" "$paused_now" "$COUNT_ZERO" "$COUNT_PARTIAL" "$TOP_STATES" "$STOPPED_UP" "$STOPPED_DL" "$STALLED_UP" "$UPLOADING" "$QUEUED_UP"
