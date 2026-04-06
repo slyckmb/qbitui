@@ -6,7 +6,7 @@
 # Direct XMLRPC access is available only via --direct for one-off diagnostics.
 set -euo pipefail
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.1"
 RT_CONTAINER="${RT_CONTAINER:-rtorrent_vpn}"
 RT_RPC_URL="${RT_RPC_URL:-http://localhost:8000/}"
 RT_CACHE_SUMMARY="${RT_CACHE_SUMMARY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rt-cache-summary.py}"
@@ -348,7 +348,7 @@ while true; do
       else
         read -r CHECKING ERROR DOWN STALLED_DL STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
           [
-            (.states.checking // 0),
+            ((.states.checkingDL // 0) + (.states.checkingUP // 0) + (.states.checking // 0)),
             (.states.error // 0),
             (.states.downloading // 0),
             (.states.stalledDL // 0),
