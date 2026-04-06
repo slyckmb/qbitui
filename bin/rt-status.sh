@@ -6,7 +6,7 @@
 # Direct XMLRPC access is available only via --direct for one-off diagnostics.
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.2.1"
 RT_CONTAINER="${RT_CONTAINER:-rtorrent_vpn}"
 RT_RPC_URL="${RT_RPC_URL:-http://localhost:8000/}"
 RT_CACHE_SUMMARY="${RT_CACHE_SUMMARY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rt-cache-summary.py}"
@@ -251,16 +251,12 @@ print_dashboard() {
 
   local sep="────────────────────────"
 
-  printf '── rTorrent v%s ──\n' "$SCRIPT_VERSION"
-  printf '%s\n' "$ts"
-  printf '%-12s : %s\n' "transport" "$transport_label"
-  printf '%-12s : %s\n' "cache" "$transport_detail"
+  printf '── RT v%s · %s · %s %s ──\n' \
+    "$SCRIPT_VERSION" "$ts" "$transport_label" "$transport_detail"
   printf '%s\n' "$sep"
   printf '%-12s : %5s\n' "checking"    "$checking"
   printf '%-12s : %5s\n' "error"       "$error"
   printf '%-12s : %5s\n' "trk_warn"    "$trk_warn"
-  printf '%-12s : %5s\n' "missing"     "-"
-  printf '%-12s : %5s\n' "moving"      "-"
   printf '%-12s : %5s\n' "downloading" "$down"
   printf '%-12s : %5s\n' "stalledDL"   "$stalled_dl"
   printf '%-12s : %5s\n' "seeding(up)" "$seeding_up"
@@ -268,14 +264,8 @@ print_dashboard() {
   printf '%-12s : %5s\n' "uploading"   "$uploading"
   printf '%-12s : %5s\n' "stoppedUP"   "$stopped_up"
   printf '%-12s : %5s\n' "stoppedDL"   "$stopped_dl"
-  printf '%-12s : %5s\n' "queuedUP"    "-"
-  if [[ "$show_unexpected" -eq 1 ]]; then
-    printf '%-12s : %5s\n' "unexpected↓" "-"
-  fi
   printf '%s\n' "$sep"
-  printf '%-12s : %5s\n' "total"       "$total"
-  printf '%s\n' "$sep"
-  printf '%-12s : %4ss\n' "interval"   "$interval_s"
+  printf 'total %-6s · %ss\n' "$total" "$interval_s"
 }
 
 _FORCE_REDRAW=0
@@ -347,12 +337,9 @@ while true; do
     else
       RT_TRANSPORT_LABEL="cache"
       RT_TRANSPORT_DETAIL="$(jq -r '
-        [
-          (.freshness // "unknown"),
-          ("age=" + ((.cache_age_s // "?" | tostring | split(".")[0]) + "s")),
-          ("daemon=" + (if .daemon_running then "up" else "down" end)),
-          ("src=" + ((.cache_source // "unknown") | tostring))
-        ] | join(" ")
+        ((.cache_age_s // "?") | tostring | split(".")[0]) + "s" +
+        (if .freshness != "fresh" then "·" + (.freshness // "?") else "" end) +
+        (if .daemon_running == false then "·dmn↓" else "" end)
       ' <<<"$SUMMARY_JSON")"
       if [[ "$(jq -r '.ok' <<<"$SUMMARY_JSON")" != "true" ]]; then
         FETCH_ERROR="$(jq -r '.last_error // .status_error // "cache_missing"' <<<"$SUMMARY_JSON")"
@@ -383,19 +370,12 @@ while true; do
     _err_ts="$(date '+%F %T')"
     if [[ "$DASHBOARD" -eq 1 ]]; then
       printf '\033[2J\033[H'
-      printf '── rTorrent v%s ── ERROR\n' "$SCRIPT_VERSION"
-      printf '%s\n' "$_err_ts"
-      if [[ -n "$RT_TRANSPORT_LABEL" ]]; then
-        printf '%-12s : %s\n' "transport" "$RT_TRANSPORT_LABEL"
-      fi
-      if [[ -n "$RT_TRANSPORT_DETAIL" ]]; then
-        printf '%-12s : %s\n' "cache" "$RT_TRANSPORT_DETAIL"
-      fi
+      printf '── RT v%s · %s · %s %s ── ERROR\n' \
+        "$SCRIPT_VERSION" "$_err_ts" "${RT_TRANSPORT_LABEL:-?}" "${RT_TRANSPORT_DETAIL:-}"
       printf '────────────────────────\n'
-      printf '%-12s : %s\n' "error" "$FETCH_ERROR"
-      printf '%-12s : %5s\n' "total" "-"
+      printf '%-12s : %s\n' "fetch_error" "$FETCH_ERROR"
       printf '────────────────────────\n'
-      printf '%-12s : %4ss\n' "interval" "$INTERVAL_S"
+      printf 'total  -    · %ss\n' "$INTERVAL_S"
       _FORCE_REDRAW=0
     else
       printf '%s error fetch_error=%s\n' "$_err_ts" "$FETCH_ERROR"
