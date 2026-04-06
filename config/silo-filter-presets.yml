@@ -20,3 +20,11 @@ slots:
     - su
     enabled: true
     negate: true
+  '3':
+  - type: status
+    values:
+    - u
+    - su
+    - e
+    enabled: true
+    negate: true
