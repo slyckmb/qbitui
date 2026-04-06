@@ -6,7 +6,7 @@
 # Direct XMLRPC access is available only via --direct for one-off diagnostics.
 set -euo pipefail
 
-SCRIPT_VERSION="1.1.1"
+SCRIPT_VERSION="1.2.0"
 RT_CONTAINER="${RT_CONTAINER:-rtorrent_vpn}"
 RT_RPC_URL="${RT_RPC_URL:-http://localhost:8000/}"
 RT_CACHE_SUMMARY="${RT_CACHE_SUMMARY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rt-cache-summary.py}"
@@ -38,7 +38,9 @@ Env:
 
 States:
   checking    — hash check in progress (d.hashing>0)
-  error       — tracker error message set (d.message non-empty)
+  error       — fatal: d.message set on incomplete item (download stuck/broken)
+  trk_warn    — informational: d.message set on complete seeding item (tracker
+                announce rejection; content is fine — peer_limit, multi_location, etc.)
   downloading — active download (state=1, incomplete, down.rate>0)
   stalledDL   — stalled download (state=1, incomplete, down.rate=0)
   seeding(up) — complete and started (uploading + stalledUP)
@@ -46,6 +48,9 @@ States:
   uploading   — seeding, actively uploading
   stoppedUP   — complete, stopped
   stoppedDL   — incomplete, stopped
+
+  Note: cache mode maps .states.error → trk_warn (pre-split; error_fatal=0 until
+  silo cache daemon emits .states.error_fatal separately).
 
 Options:
   --interval N        Poll interval seconds (default: 30)
@@ -175,7 +180,9 @@ def derive_state(state, hashing, complete, down_rate, up_rate, message):
     if hashing > 0:
         return 'checking'
     if message and message.strip():
-        return 'error'
+        # Complete item with message = tracker announce rejection (informational)
+        # Incomplete item with message = fatal (download stuck/broken)
+        return 'tracker_warn' if complete == 1 else 'error'
     if state == 0:
         return 'stoppedUP' if complete == 1 else 'stoppedDL'
     # state == 1 (started/active)
@@ -228,18 +235,19 @@ print_dashboard() {
   local ts="$1"
   local checking="$2"
   local error="$3"
-  local down="$4"
-  local stalled_dl="$5"
-  local seeding_up="$6"
-  local stalled_up="$7"
-  local uploading="$8"
-  local stopped_up="$9"
-  local stopped_dl="${10}"
-  local total="${11}"
-  local interval_s="${12}"
-  local show_unexpected="${13}"
-  local transport_label="${14}"
-  local transport_detail="${15}"
+  local trk_warn="$4"
+  local down="$5"
+  local stalled_dl="$6"
+  local seeding_up="$7"
+  local stalled_up="$8"
+  local uploading="$9"
+  local stopped_up="${10}"
+  local stopped_dl="${11}"
+  local total="${12}"
+  local interval_s="${13}"
+  local show_unexpected="${14}"
+  local transport_label="${15}"
+  local transport_detail="${16}"
 
   local sep="────────────────────────"
 
@@ -250,6 +258,7 @@ print_dashboard() {
   printf '%s\n' "$sep"
   printf '%-12s : %5s\n' "checking"    "$checking"
   printf '%-12s : %5s\n' "error"       "$error"
+  printf '%-12s : %5s\n' "trk_warn"    "$trk_warn"
   printf '%-12s : %5s\n' "missing"     "-"
   printf '%-12s : %5s\n' "moving"      "-"
   printf '%-12s : %5s\n' "downloading" "$down"
@@ -283,6 +292,7 @@ while true; do
   RT_TRANSPORT_DETAIL=""
   CHECKING=0
   ERROR=0
+  TRACKER_WARN=0
   DOWN=0
   STALLED_DL=0
   SEEDING_UP=0
@@ -304,17 +314,18 @@ while true; do
       TORRENTS_JSON="$_raw"
       RT_TRANSPORT_LABEL="direct"
       RT_TRANSPORT_DETAIL="xmlrpc"
-      read -r CHECKING ERROR DOWN STALLED_DL SEEDING_UP STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
+      read -r CHECKING ERROR TRACKER_WARN DOWN STALLED_DL SEEDING_UP STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
         [
-          ([.[] | select(.state == "checking")]    | length),
-          ([.[] | select(.state == "error")]       | length),
-          ([.[] | select(.state == "downloading")] | length),
-          ([.[] | select(.state == "stalledDL")]   | length),
+          ([.[] | select(.state == "checking")]      | length),
+          ([.[] | select(.state == "error")]         | length),
+          ([.[] | select(.state == "tracker_warn")]  | length),
+          ([.[] | select(.state == "downloading")]   | length),
+          ([.[] | select(.state == "stalledDL")]     | length),
           ([.[] | select(.state == "uploading" or .state == "stalledUP")] | length),
-          ([.[] | select(.state == "stalledUP")]   | length),
-          ([.[] | select(.state == "uploading")]   | length),
-          ([.[] | select(.state == "stoppedUP")]   | length),
-          ([.[] | select(.state == "stoppedDL")]   | length),
+          ([.[] | select(.state == "stalledUP")]     | length),
+          ([.[] | select(.state == "uploading")]     | length),
+          ([.[] | select(.state == "stoppedUP")]     | length),
+          ([.[] | select(.state == "stoppedDL")]     | length),
           (length),
           (
             group_by(.state)
@@ -346,9 +357,12 @@ while true; do
       if [[ "$(jq -r '.ok' <<<"$SUMMARY_JSON")" != "true" ]]; then
         FETCH_ERROR="$(jq -r '.last_error // .status_error // "cache_missing"' <<<"$SUMMARY_JSON")"
       else
-        read -r CHECKING ERROR DOWN STALLED_DL STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
+        read -r CHECKING ERROR TRACKER_WARN DOWN STALLED_DL STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
           [
             ((.states.checkingDL // 0) + (.states.checkingUP // 0) + (.states.checking // 0)),
+            # error_fatal: fatal only (incomplete+message); 0 until silo splits the bucket
+            (.states.error_fatal // 0),
+            # error (pre-split) = tracker announce rejections; complete items with d.message
             (.states.error // 0),
             (.states.downloading // 0),
             (.states.stalledDL // 0),
@@ -399,16 +413,16 @@ while true; do
     _FORCE_REDRAW=0
     print_dashboard \
       "$(date '+%F %T')" \
-      "$CHECKING" "$ERROR" "$DOWN" "$STALLED_DL" \
+      "$CHECKING" "$ERROR" "$TRACKER_WARN" "$DOWN" "$STALLED_DL" \
       "$SEEDING_UP" "$STALLED_UP" "$UPLOADING" \
       "$STOPPED_UP" "$STOPPED_DL" \
       "$TOTAL" "$INTERVAL_S" 0 \
       "$RT_TRANSPORT_LABEL" "$RT_TRANSPORT_DETAIL"
   else
-    printf '%s transport=%s detail=%q checking=%s error=%s downloading=%s stalledDL=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s stoppedDL=%s total=%s top=%s\n' \
+    printf '%s transport=%s detail=%q checking=%s error=%s trk_warn=%s downloading=%s stalledDL=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s stoppedDL=%s total=%s top=%s\n' \
       "$(date '+%F %T')" \
       "$RT_TRANSPORT_LABEL" "$RT_TRANSPORT_DETAIL" \
-      "$CHECKING" "$ERROR" "$DOWN" "$STALLED_DL" \
+      "$CHECKING" "$ERROR" "$TRACKER_WARN" "$DOWN" "$STALLED_DL" \
       "$SEEDING_UP" "$STALLED_UP" "$UPLOADING" \
       "$STOPPED_UP" "$STOPPED_DL" \
       "$TOTAL" "$TOP_STATES"
