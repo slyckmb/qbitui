@@ -60,7 +60,7 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.5.0"
+VERSION = "2.5.2"
 LAST_UPDATED = "2026-03-28"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -2058,7 +2058,7 @@ def parse_filter_line(line: str, existing: list[dict]) -> list[dict]:
     tokens = shlex.split(line)
     if not tokens:
         return existing
-    updated = [f for f in existing if f.get("type") not in ("text", "category", "tag")]
+    updated = [f for f in existing if f.get("type") not in ("text", "category", "tag", "savepath")]
     updates: dict[str, dict] = {}
     for token in tokens:
         if "=" not in token:
@@ -2094,6 +2094,12 @@ def parse_filter_line(line: str, existing: list[dict]) -> list[dict]:
             if parsed:
                 parsed["enabled"] = True
                 updates["tag"] = parsed
+        elif key in ("path", "savepath", "sp"):
+            negate = False
+            if value.startswith("!"):
+                negate = True
+                value = value[1:]
+            updates["savepath"] = {"type": "savepath", "value": value, "enabled": True, "negate": negate}
         elif key in ("hash", "h"):
             negate = False
             if value.startswith("!"):
@@ -2127,6 +2133,9 @@ def summarize_filters(filters: list[dict]) -> str:
             if prefix and raw and not raw.startswith("!"):
                 raw = prefix + raw
             parts.append(f"tag={raw}")
+        elif flt["type"] == "savepath":
+            prefix = "!" if flt.get("negate") else ""
+            parts.append(f"path={prefix}{flt['value']}")
         elif flt["type"] == "hash":
             prefix = "!" if flt.get("negate") else ""
             parts.append(f"hash={prefix}{flt['value']}")
@@ -2225,6 +2234,8 @@ def serialize_filters(filters: list[dict]) -> list[dict]:
                 "enabled": flt.get("enabled", True),
                 "negate": flt.get("negate", False),
             })
+        elif flt["type"] == "savepath":
+            out.append({"type": "savepath", "value": flt["value"], "enabled": flt.get("enabled", True), "negate": flt.get("negate", False)})
         elif flt["type"] == "hash":
             out.append({"type": "hash", "value": flt["value"], "enabled": flt.get("enabled", True), "negate": flt.get("negate", False)})
         elif flt["type"] == "status":
@@ -2252,6 +2263,8 @@ def restore_filters(items: list[dict]) -> list[dict]:
                     "negate": item.get("negate", False),
                 })
                 filters.append(parsed)
+        elif ftype == "savepath" and item.get("value"):
+            filters.append({"type": "savepath", "value": item["value"], "enabled": item.get("enabled", True), "negate": item.get("negate", False)})
         elif ftype == "hash" and item.get("value"):
             filters.append({"type": "hash", "value": item["value"], "enabled": item.get("enabled", True), "negate": item.get("negate", False)})
         elif ftype == "status" and item.get("values"):
@@ -2298,6 +2311,13 @@ def apply_filters(rows: list[dict], filters: list[dict]) -> list[dict]:
                     present = bool(tags & tag_set)
                 return not present if flt.get("negate") else present
             filtered = [r for r in filtered if match(r)]
+        elif flt["type"] == "savepath":
+            term = flt["value"].lower()
+            _negate_sp = flt.get("negate")
+            def match_savepath(r, _t=term, _n=_negate_sp):
+                present = _t in (r.get("save_path") or "").lower()
+                return not present if _n else present
+            filtered = [r for r in filtered if match_savepath(r)]
         elif flt["type"] == "hash":
             hash_fragment = flt["value"].lower()
             def match_hash(r):
@@ -3046,7 +3066,7 @@ def main() -> int:
     tracker_url_pattern_map = load_tracker_url_pattern_map(TRACKER_REGISTRY_FILE)
     macros_mtime = macro_config_path.stat().st_mtime if macro_config_path.exists() else -1.0
     last_macro_check = 0.0
-    sort_fields = ["added_on", "name", "state", "ratio", "progress", "eta", "size", "dlspeed", "upspeed"]
+    sort_fields = ["added_on", "name", "state", "ratio", "progress", "eta", "size", "dlspeed", "upspeed", "hash", "save_path"]
     sort_index = 0
     sort_desc = True
     show_tags = False
@@ -3926,6 +3946,8 @@ def main() -> int:
                 if sort_field == "size": return raw.get("size") or raw.get("total_size") or 0
                 if sort_field == "dlspeed": return raw.get("dlspeed") or 0
                 if sort_field == "upspeed": return raw.get("upspeed") or 0
+                if sort_field == "hash": return row.get("hash", "")
+                if sort_field == "save_path": return row.get("save_path", "")
                 return row.get("name", "")
             rows_to_render.sort(key=sort_key, reverse=sort_desc)
             
