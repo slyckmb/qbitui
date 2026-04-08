@@ -28,3 +28,9 @@ slots:
     - e
     enabled: true
     negate: true
+  '4':
+  - type: status
+    values:
+    - stoppeddl
+    enabled: true
+    negate: false
