@@ -35,9 +35,33 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
+# Optional rTorrent client module — degrades gracefully if missing
+try:
+    import silo_client_rt as _rt_client
+    _RT_AVAILABLE = True
+except ImportError:
+    _rt_client = None  # type: ignore
+    _RT_AVAILABLE = False
+
+# Optional SABnzbd client module — degrades gracefully if missing
+try:
+    import silo_client_sab as _sab_client
+    _SAB_AVAILABLE = True
+except ImportError:
+    _sab_client = None  # type: ignore
+    _SAB_AVAILABLE = False
+
+# Optional cache infrastructure (silo_cache_common.py in same directory)
+try:
+    import silo_cache_common as _cc
+    _CC_AVAILABLE = True
+except ImportError:
+    _cc = None  # type: ignore
+    _CC_AVAILABLE = False
+
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.0.0"
-LAST_UPDATED = "2026-03-16"
+VERSION = "2.5.2"
+LAST_UPDATED = "2026-03-28"
 FULL_TUI_MIN_WIDTH = 120
 
 # ============================================================================
@@ -420,6 +444,46 @@ def read_qbit_config(path: Path) -> tuple[str, str]:
         if in_downloaders and in_qbit and line.strip().startswith("credentials_file:"):
             creds = line.split("credentials_file:", 1)[1].strip()
     return api_url, creds
+
+
+def _read_rt_config(path: Path) -> str:
+    """Return rtorrent.xmlrpc_url from silo.yml, or RTORRENT_XMLRPC_URL env var."""
+    try:
+        if path.exists() and yaml is not None:
+            data = yaml.safe_load(path.read_text()) or {}
+            url = (data.get("downloaders") or {}).get("rtorrent", {}).get("xmlrpc_url", "")
+            if url:
+                return url
+    except Exception:
+        pass
+    return os.environ.get("RTORRENT_XMLRPC_URL", "")
+
+
+def _read_sab_config(path: Path) -> tuple[str, str]:
+    """Return (api_url, api_key) for SABnzbd from silo.yml / env vars."""
+    api_url = os.environ.get("SABNZBD_URL", "")
+    api_key = os.environ.get("SABNZBD_API_KEY", "")
+    try:
+        if path.exists() and yaml is not None:
+            data = yaml.safe_load(path.read_text()) or {}
+            sab = (data.get("downloaders") or {}).get("sabnzbd", {})
+            if not api_url:
+                api_url = sab.get("api_url", "")
+            if not api_key:
+                api_key = sab.get("api_key", "")
+    except Exception:
+        pass
+    # Check file-based api_key
+    if not api_key:
+        key_file = os.environ.get("SABNZBD_API_KEY_FILE", "/mnt/config/secrets/sabnzbd/sabnzbd.env")
+        try:
+            for line in Path(key_file).read_text().splitlines():
+                if line.strip().startswith("SABNZBD_API_KEY="):
+                    api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+        except Exception:
+            pass
+    return api_url or "http://localhost:8080", api_key
 
 
 def read_credentials(path: Path) -> tuple[str, str]:
@@ -900,6 +964,13 @@ def get_content_path(torrent_raw: dict) -> str:
         save_path = torrent_raw.get("save_path") or ""
         item_name = torrent_raw.get("name") or ""
         content_path = str(Path(save_path) / item_name) if save_path and item_name else ""
+    if not content_path:
+        # rTorrent: base_path is computed as directory/name (single-file) or directory
+        # (multi-file, where rTorrent already appends the torrent name to directory)
+        content_path = torrent_raw.get("base_path") or ""
+    if not content_path:
+        # rTorrent last-resort: bare directory (parent dir for single-file)
+        content_path = torrent_raw.get("directory") or ""
     return content_path
 
 
@@ -1176,16 +1247,18 @@ def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
     age_str = f"age {float(age):.1f}s" if age is not None else "age ?"
     items = cache_info.get("items")
     items_str = f"  {colors.FG_TERTIARY}{items} items{colors.RESET}" if items is not None else ""
+    client_label = cache_info.get("client_label", "qbit")
     qb_profile = cache_info.get("qb_profile") or {}
     qb_app = str(qb_profile.get("app_version") or "").strip()
     qb_api = str(qb_profile.get("webapi_version") or "").strip()
     qb_profile_str = ""
     if qb_app or qb_api:
+        _app_label, _api_label = ("rt", "lt") if client_label == "rt" else ("app", "api")
         qb_bits = []
         if qb_app:
-            qb_bits.append(f"app {qb_app}")
+            qb_bits.append(f"{_app_label} {qb_app}")
         if qb_api:
-            qb_bits.append(f"api {qb_api}")
+            qb_bits.append(f"{_api_label} {qb_api}")
         qb_profile_str = f"  {colors.FG_TERTIARY}{' / '.join(qb_bits)}{colors.RESET}"
     err = str(cache_info.get("last_error") or "")
     err_str = f"  {colors.ERROR}err:{err[:25]}{colors.RESET}" if err else ""
@@ -1203,7 +1276,7 @@ def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
         f"  {colors.FG_SECONDARY}bulk={colors.YELLOW}{interval_str}{colors.RESET}"
         f"{fast_str}"
         f"  {colors.FG_SECONDARY}↑cache {colors.CYAN}{hits}{colors.RESET}"
-        f"  {colors.FG_SECONDARY}↓qbit {colors.BLUE}{direct}{colors.RESET}"
+        f"  {colors.FG_SECONDARY}↓{client_label} {colors.BLUE}{direct}{colors.RESET}"
         f"  {colors.FG_SECONDARY}hit {colors.GREEN}{hit_pct}{colors.RESET}"
         f"  {colors.FG_TERTIARY}{age_str}{colors.RESET}"
         f"{items_str}{leases_str}{qb_profile_str}{no_daemon_str}{err_str}"
@@ -1985,7 +2058,7 @@ def parse_filter_line(line: str, existing: list[dict]) -> list[dict]:
     tokens = shlex.split(line)
     if not tokens:
         return existing
-    updated = [f for f in existing if f.get("type") not in ("text", "category", "tag")]
+    updated = [f for f in existing if f.get("type") not in ("text", "category", "tag", "savepath")]
     updates: dict[str, dict] = {}
     for token in tokens:
         if "=" not in token:
@@ -2021,6 +2094,12 @@ def parse_filter_line(line: str, existing: list[dict]) -> list[dict]:
             if parsed:
                 parsed["enabled"] = True
                 updates["tag"] = parsed
+        elif key in ("path", "savepath", "sp"):
+            negate = False
+            if value.startswith("!"):
+                negate = True
+                value = value[1:]
+            updates["savepath"] = {"type": "savepath", "value": value, "enabled": True, "negate": negate}
         elif key in ("hash", "h"):
             negate = False
             if value.startswith("!"):
@@ -2054,6 +2133,9 @@ def summarize_filters(filters: list[dict]) -> str:
             if prefix and raw and not raw.startswith("!"):
                 raw = prefix + raw
             parts.append(f"tag={raw}")
+        elif flt["type"] == "savepath":
+            prefix = "!" if flt.get("negate") else ""
+            parts.append(f"path={prefix}{flt['value']}")
         elif flt["type"] == "hash":
             prefix = "!" if flt.get("negate") else ""
             parts.append(f"hash={prefix}{flt['value']}")
@@ -2152,6 +2234,8 @@ def serialize_filters(filters: list[dict]) -> list[dict]:
                 "enabled": flt.get("enabled", True),
                 "negate": flt.get("negate", False),
             })
+        elif flt["type"] == "savepath":
+            out.append({"type": "savepath", "value": flt["value"], "enabled": flt.get("enabled", True), "negate": flt.get("negate", False)})
         elif flt["type"] == "hash":
             out.append({"type": "hash", "value": flt["value"], "enabled": flt.get("enabled", True), "negate": flt.get("negate", False)})
         elif flt["type"] == "status":
@@ -2179,6 +2263,8 @@ def restore_filters(items: list[dict]) -> list[dict]:
                     "negate": item.get("negate", False),
                 })
                 filters.append(parsed)
+        elif ftype == "savepath" and item.get("value"):
+            filters.append({"type": "savepath", "value": item["value"], "enabled": item.get("enabled", True), "negate": item.get("negate", False)})
         elif ftype == "hash" and item.get("value"):
             filters.append({"type": "hash", "value": item["value"], "enabled": item.get("enabled", True), "negate": item.get("negate", False)})
         elif ftype == "status" and item.get("values"):
@@ -2225,6 +2311,13 @@ def apply_filters(rows: list[dict], filters: list[dict]) -> list[dict]:
                     present = bool(tags & tag_set)
                 return not present if flt.get("negate") else present
             filtered = [r for r in filtered if match(r)]
+        elif flt["type"] == "savepath":
+            term = flt["value"].lower()
+            _negate_sp = flt.get("negate")
+            def match_savepath(r, _t=term, _n=_negate_sp):
+                present = _t in (r.get("save_path") or "").lower()
+                return not present if _n else present
+            filtered = [r for r in filtered if match_savepath(r)]
         elif flt["type"] == "hash":
             hash_fragment = flt["value"].lower()
             def match_hash(r):
@@ -2442,16 +2535,8 @@ def render_info_lines(item: dict, width: int) -> list[str]:
     use_dl    = bool(raw.get("use_download_path"))
     progress  = float(raw.get("progress") or 0)
     name      = (raw.get("name") or "").strip()
-
-    # active = where files are right now
-    if api_cp:
-        active = api_cp
-    elif use_dl and progress < 1.0 and dl_path:
-        active = str(Path(dl_path) / name) if name else dl_path
-    elif save_path:
-        active = str(Path(save_path) / name) if name else save_path
-    else:
-        active = ""
+    directory = (raw.get("directory") or "").rstrip("/")   # rTorrent: d.directory= is parent dir
+    base_path = (raw.get("base_path") or "").rstrip("/")  # rTorrent: d.base_path= = full content path
 
     def _path_label(p: str) -> str:
         if not p:
@@ -2462,19 +2547,34 @@ def render_info_lines(item: dict, width: int) -> list[str]:
 
     lines.append("-" * width)
     lines.append("Paths:")
-    if active:
-        same_as_final = (active == str(Path(save_path) / name) if (save_path and name) else active == save_path)
-        lines.append(f"  Active:     {_path_label(active)}")
-        if save_path and not same_as_final:
-            lines.append(f"  Final dest: {_path_label(str(Path(save_path) / name) if name else save_path)}")
-    if save_path:
-        lines.append(f"  Save path:  {_path_label(save_path)}")
-    if use_dl and dl_path:
-        in_dl = use_dl and progress < 1.0
-        dl_note = "(active — incomplete)" if in_dl else "(complete — moved to save path)"
-        lines.append(f"  Incomplete: {dl_path}  {dl_note}")
-    elif not use_dl:
-        lines.append(f"  Incomplete: N/A (use_download_path=false)")
+    if directory and not save_path:
+        # rTorrent: show both the exact content path and the parent directory
+        if base_path:
+            lines.append(f"  Content:    {_path_label(base_path)}")
+        lines.append(f"  Directory:  {_path_label(directory)}")
+    else:
+        # qBit: compute active path from save_path / download_path / content_path
+        if api_cp:
+            active = api_cp
+        elif use_dl and progress < 1.0 and dl_path:
+            active = str(Path(dl_path) / name) if name else dl_path
+        elif save_path:
+            active = str(Path(save_path) / name) if name else save_path
+        else:
+            active = ""
+        if active:
+            same_as_final = (active == str(Path(save_path) / name) if (save_path and name) else active == save_path)
+            lines.append(f"  Active:     {_path_label(active)}")
+            if save_path and not same_as_final:
+                lines.append(f"  Final dest: {_path_label(str(Path(save_path) / name) if name else save_path)}")
+        if save_path:
+            lines.append(f"  Save path:  {_path_label(save_path)}")
+        if use_dl and dl_path:
+            in_dl = use_dl and progress < 1.0
+            dl_note = "(active — incomplete)" if in_dl else "(complete — moved to save path)"
+            lines.append(f"  Incomplete: {dl_path}  {dl_note}")
+        elif not use_dl:
+            lines.append(f"  Incomplete: N/A (use_download_path=false)")
 
     # ── Other metadata ────────────────────────────────────────────────────────
     lines.append("-" * width)
@@ -2784,19 +2884,23 @@ def render_mediainfo_lines(item: dict, width: int, colors: ColorScheme) -> list[
     return lines or [f"{colors.FG_TERTIARY}No MediaInfo.{colors.RESET}"]
 
 
-def resolve_available_tabs(opener: urllib.request.OpenerDirector, api_url: str, item: dict) -> list[str]:
+def resolve_available_tabs(opener: urllib.request.OpenerDirector, api_url: str, item: dict,
+                            active_client: str = "qbit", rt_proxy=None) -> list[str]:
     available = ["Info"]
     hash_value = item.get("hash")
     if not hash_value:
         return available
-    trackers = fetch_trackers(opener, api_url, hash_value)
-    if trackers:
+    if active_client == "rtorrent" and rt_proxy is not None:
         available.append("Trackers")
-    files = fetch_files(opener, api_url, hash_value)
-    if files:
-        available.append("Content")
-    peers_payload = fetch_peers(opener, api_url, hash_value)
-    if peers_payload.get("peers"):
+        files = _rt_client.fetch_files(rt_proxy, hash_value)
+        if files:
+            available.append("Content")
+        available.append("Peers")
+    else:
+        available.append("Trackers")
+        files = fetch_files(opener, api_url, hash_value)
+        if files:
+            available.append("Content")
         available.append("Peers")
     raw = item.get("raw") or {}
     content_path = get_content_path(raw)
@@ -2883,6 +2987,22 @@ def main() -> int:
     parser.add_argument("--daemon-ping-interval", type=float, default=5.0, metavar="SECS",
                         help="How often to re-ping the daemon while cache remains stale (default: 5).")
     parser.add_argument("--mediainfo-cache-dir", type=Path, default=None, help="Override mediainfo cache directory (default: ~/.logs/media_qc/cache/mediainfo, or QBIT_MEDIAINFO_CACHE_DIR env).")
+    parser.add_argument("--rt-interval", type=float, default=30.0, metavar="SECS",
+                        help="rTorrent cache poll interval in seconds (default: 30).")
+    parser.add_argument("--rt-direct", action="store_true",
+                        help="Disable daemon/cache mode and poll RT XMLRPC directly on "
+                             "every refresh.  Use for diagnostics only — not safe under "
+                             "RT overload.")
+    parser.add_argument("--rt-fallback-container", default="rtorrent_vpn", metavar="NAME",
+                        help="Docker container for daemon fallback transport when host "
+                             "XMLRPC is broken (default: rtorrent_vpn).  Empty to disable.")
+    parser.add_argument("--rt-fallback-inner-url", default="http://localhost:8000/RPC2",
+                        metavar="URL",
+                        help="XMLRPC URL inside the fallback container "
+                             "(default: http://localhost:8000/RPC2).")
+    parser.add_argument("--client", default=os.environ.get("SILO_DEFAULT_CLIENT", "qbit"),
+                        choices=["qbit", "rtorrent", "sabnzbd"],
+                        help="Initial active client (default: qbit, or SILO_DEFAULT_CLIENT env).")
     args = parser.parse_args()
 
     # Initialize global color scheme
@@ -2893,7 +3013,13 @@ def main() -> int:
     if args.mediainfo_cache_dir:
         CACHE_DIR = args.mediainfo_cache_dir.expanduser()
 
-    config_path = Path(args.config) if args.config else (Path(__file__).parent.parent / "config" / "request-cache.yml")
+    _repo_root = Path(__file__).parent.parent
+    if args.config:
+        config_path = Path(args.config)
+    elif (_repo_root / "config" / "silo.yml").exists():
+        config_path = _repo_root / "config" / "silo.yml"
+    else:
+        config_path = _repo_root / "config" / "request-cache.yml"  # legacy fallback
     cfg_api_url, cfg_creds = read_qbit_config(config_path)
     api_url = os.environ.get("QBITTORRENT_API_URL") or cfg_api_url or "http://localhost:9003"
     creds_file = os.environ.get("QBITTORRENT_CREDENTIALS_FILE") or cfg_creds or "/mnt/config/secrets/qbittorrent/api.env"
@@ -2903,8 +3029,10 @@ def main() -> int:
     if not username or not password:
         username, password = read_credentials(Path(creds_file))
     if not username or not password:
-        print("ERROR: QBITTORRENT credentials not found (set env or credentials file)", file=sys.stderr)
-        return 1
+        if args.client == "qbit":
+            print("ERROR: QBITTORRENT credentials not found (set env or credentials file)", file=sys.stderr)
+            return 1
+        # For non-qBit initial clients, credentials missing is non-fatal; qBit switch will warn later
 
     # --cache-status: delegate to cache agent and exit (no curses required)
     if args.cache_status:
@@ -2920,13 +3048,13 @@ def main() -> int:
         return result.returncode
 
     opener = make_opener()
-    # Try optimistic auth bypass (e.g. localhost whitelist) to avoid triggering bans
-    if check_auth_bypass(opener, api_url):
-        # Authenticated via whitelist/cookie
-        pass
-    elif not qbit_login(opener, api_url, username, password):
-        print("ERROR: qBittorrent login failed", file=sys.stderr)
-        return 1
+    # Try optimistic auth bypass (e.g. localhost whitelist) to avoid triggering bans.
+    # Only required when starting with qBit; for other clients this is deferred to first use.
+    if args.client == "qbit":
+        if not check_auth_bypass(opener, api_url):
+            if not qbit_login(opener, api_url, username, password):
+                # qBit unreachable at startup — soft fail: TUI will show error/retry in main loop
+                pass  # reconnect logic in the fetch loop will handle this
 
     scope = "all"
     page = 0
@@ -2938,7 +3066,7 @@ def main() -> int:
     tracker_url_pattern_map = load_tracker_url_pattern_map(TRACKER_REGISTRY_FILE)
     macros_mtime = macro_config_path.stat().st_mtime if macro_config_path.exists() else -1.0
     last_macro_check = 0.0
-    sort_fields = ["added_on", "name", "state", "ratio", "progress", "eta", "size", "dlspeed", "upspeed"]
+    sort_fields = ["added_on", "name", "state", "ratio", "progress", "eta", "size", "dlspeed", "upspeed", "hash", "save_path"]
     sort_index = 0
     sort_desc = True
     show_tags = False
@@ -2956,6 +3084,54 @@ def main() -> int:
     banner_text = ""
     banner_until = 0.0
     last_banner_time = 0.0
+
+    # ── Multi-client state ────────────────────────────────────────────────────
+    active_client = args.client  # "qbit" | "rtorrent" | "sabnzbd" — set via --client
+    rt_url = _read_rt_config(config_path)
+    rt_cached_rows: list[dict] = []
+    rt_cached_torrents: list[dict] = []
+    rt_cache_time = 0.0
+    rt_fetch_interval = args.rt_interval
+    rt_cache_hit_count  = 0   # reads served from daemon cache file (mtime-guarded)
+    rt_direct_hit_count = 0   # reads served via direct XMLRPC fallback
+    _rt_profile: dict = {}    # {app_version: rTorrent ver, webapi_version: libtorrent ver}
+    if rt_url and _RT_AVAILABLE:
+        try:
+            _p = _rt_client.connect(rt_url)
+            _rt_profile = {
+                "app_version":   _p.system.client_version(),
+                "webapi_version": _p.system.library_version(),
+            }
+        except Exception:
+            pass
+
+    # rTorrent cache daemon paths (written by silo-rt-cache-daemon.py)
+    _rt_cache_base    = Path.home() / ".cache" / "silo-rt"
+    _rt_cache_file    = _rt_cache_base / "torrents.json"
+    _rt_meta_file     = _rt_cache_base / "torrents.meta.json"
+    _rt_lease_dir     = _rt_cache_base / "leases"
+    _rt_pid_file      = _rt_cache_base / "daemon.pid"
+    _rt_lock_file     = _rt_cache_base / "daemon.lock"
+    _rt_log_file      = _rt_cache_base / "daemon.log"
+    _rt_daemon_script = Path(__file__).parent / "silo-rt-cache-daemon.py"
+    _rt_cache_max_age = max(rt_fetch_interval * 3, 30.0)  # stale threshold scales with interval
+    _rt_daemon_ping_interval = 15.0   # how often to re-ping ensure_daemon
+    _rt_last_daemon_ping = 0.0
+
+    # Always restart the cache daemon on startup so it picks up any code changes.
+    # The last-good cache file is preserved on disk; the brief respawn gap (~3-5s)
+    # shows stale data — same behaviour as a normal cache-miss.
+    if _CC_AVAILABLE and _rt_daemon_script.exists():
+        _cc.stop_daemon(_rt_pid_file)
+    _rt_cache_mtime = 0.0             # mtime of last successfully read cache file
+
+    # SABnzbd state
+    _sab_url, _sab_api_key = _read_sab_config(config_path)
+    _sab_conn = _sab_client.connect(_sab_url, _sab_api_key) if _SAB_AVAILABLE else None
+    sab_cached_rows: list[dict] = []
+    sab_cached_torrents: list[dict] = []
+    sab_cache_time = 0.0
+    sab_fetch_interval = 5.0
 
     def set_banner(message: str, duration: float = 2.0, min_interval: float = 0.6) -> None:
         nonlocal banner_text, banner_until, last_banner_time
@@ -3031,6 +3207,11 @@ def main() -> int:
     cached_rows: list[dict] = []
     cache_time = 0.0
     fetch_interval = 2.0  # only used in direct-API (non-shared-cache) mode
+
+    # ── qBit connection recovery state ────────────────────────────────────────
+    qbit_conn_failures  = 0        # consecutive fetch failures
+    qbit_last_reconnect = 0.0      # wall time of last reconnect attempt
+    _RECONNECT_BACKOFFS = [2.0, 5.0, 15.0]  # seconds between attempts
     # Cache hit tracking (this session)
     cache_hit_count = 0    # requests served from shared cache daemon
     direct_hit_count = 0   # requests served directly from qbit API
@@ -3071,7 +3252,12 @@ def main() -> int:
             set_banner("Selection moved off page.")
             return
             
-        available = resolve_available_tabs(opener, api_url, selected_row)
+        _cyc_rt_proxy = (_rt_client.connect(rt_url)
+                         if active_client == "rtorrent" and _RT_AVAILABLE and rt_url
+                         else None)
+        available = resolve_available_tabs(opener, api_url, selected_row,
+                                           active_client=active_client,
+                                           rt_proxy=_cyc_rt_proxy)
         if not available:
             available = ["Info"]
             
@@ -3597,11 +3783,16 @@ def main() -> int:
                     cache_time = now
 
             else:
-                # Direct-API mode — original behavior
+                # Direct-API mode — with connection recovery
                 if not cached_rows or (now - cache_time) >= fetch_interval:
-                    cache_env = {**os.environ, "QBIT_URL": api_url, "QBIT_USER": username, "QBIT_PASS": password}
                     raw = qbit_request(opener, api_url, "GET", "/api/v2/torrents/info")
+                    _is_auth_err = raw and (raw.startswith("HTTP 403") or raw.startswith("HTTP 401") or "Forbidden" in raw or "Unauthorized" in raw)
+                    _is_conn_err = raw and raw.startswith("Error:")
                     if raw and not (raw.startswith("Error:") or raw.startswith("HTTP ")):
+                        # Success — reset failure counter
+                        if qbit_conn_failures > 0:
+                            set_banner("Reconnected to qBittorrent")
+                        qbit_conn_failures = 0
                         try:
                             torrents = json.loads(raw)
                             rows = build_rows(torrents, tracker_keyword_map, tracker_url_pattern_map)
@@ -3611,13 +3802,116 @@ def main() -> int:
                             data_changed = True
                         except json.JSONDecodeError:
                             set_banner("Error: Invalid JSON response")
+                    elif _is_auth_err or _is_conn_err:
+                        qbit_conn_failures += 1
+                        _backoff = _RECONNECT_BACKOFFS[min(qbit_conn_failures - 1, len(_RECONNECT_BACKOFFS) - 1)]
+                        if (now - qbit_last_reconnect) >= _backoff:
+                            qbit_last_reconnect = now
+                            set_banner(f"Connection lost — reconnecting... (attempt {qbit_conn_failures})", duration=_backoff)
+                            _reconnected = check_auth_bypass(opener, api_url) or qbit_login(opener, api_url, username, password)
+                            if _reconnected:
+                                qbit_conn_failures = 0
+                                set_banner("Reconnected to qBittorrent")
+                        else:
+                            _wait = max(0, _backoff - (now - qbit_last_reconnect))
+                            set_banner(f"qBittorrent unreachable — retry in {_wait:.0f}s", duration=1.0)
                     elif raw:
                         set_banner(f"Network error: {raw}")
                     cache_time = now
 
+            # ── rTorrent fetch (cache-first, direct XMLRPC fallback) ──────────
+            if active_client == "rtorrent" and _RT_AVAILABLE and rt_url:
+                # Ensure the cache daemon is running (fire-and-forget ping)
+                if _CC_AVAILABLE and _rt_daemon_script.exists():
+                    if (now - _rt_last_daemon_ping) >= _rt_daemon_ping_interval:
+                        _cc.ensure_daemon(
+                            daemon_script=_rt_daemon_script,
+                            cache_file=_rt_cache_file,
+                            meta_file=_rt_meta_file,
+                            lease_dir=_rt_lease_dir,
+                            pid_file=_rt_pid_file,
+                            lock_file=_rt_lock_file,
+                            log_file=_rt_log_file,
+                            extra_args=[
+                                *(["--xmlrpc-url", rt_url] if rt_url else []),
+                                *(["--fallback-container", args.rt_fallback_container]
+                                  if args.rt_fallback_container else []),
+                                "--fallback-inner-url", args.rt_fallback_inner_url,
+                            ],
+                            default_interval=rt_fetch_interval,
+                            min_interval=10.0,
+                            max_interval=120.0,
+                            idle_grace=120.0,
+                        )
+                        # Write a lease so the daemon knows we're active
+                        try:
+                            _cc.write_lease(
+                                lease_dir=_rt_lease_dir,
+                                client_id="silo-dashboard",
+                                requested_interval_s=rt_fetch_interval,
+                                lease_ttl_s=45.0,
+                            )
+                        except Exception:
+                            pass
+                        _rt_last_daemon_ping = now
+
+                # Try reading from cache file (mtime-guarded)
+                _loaded_from_cache = False
+                if _rt_cache_file.exists():
+                    try:
+                        _cf_mtime = _rt_cache_file.stat().st_mtime
+                        _cf_age = now - _cf_mtime
+                        if _cf_mtime != _rt_cache_mtime and _cf_age <= _rt_cache_max_age:
+                            _rt_rows = json.loads(_rt_cache_file.read_text(encoding="utf-8"))
+                            if _rt_rows or not rt_cached_rows:
+                                rt_cached_rows = _rt_rows
+                                rt_cached_torrents = [r.get("raw", {}) for r in _rt_rows]
+                                data_changed = True
+                            _rt_cache_mtime = _cf_mtime
+                            rt_cache_time = now
+                            _loaded_from_cache = True
+                            rt_cache_hit_count += 1
+                    except Exception:
+                        pass
+
+                # Direct XMLRPC fallback — only when daemon is disabled or
+                # --rt-direct was explicitly requested.  In daemon/cache mode
+                # the cache is the source of truth; silently polling RT on
+                # stale cache makes overload conditions worse.
+                _daemon_mode = _CC_AVAILABLE and _rt_daemon_script.exists()
+                if not _loaded_from_cache and (args.rt_direct or not _daemon_mode):
+                    if not rt_cached_rows or (now - rt_cache_time) >= rt_fetch_interval:
+                        try:
+                            _rt_rows = _rt_client.fetch(rt_url)
+                            if _rt_rows or not rt_cached_rows:
+                                rt_cached_rows = _rt_rows
+                                rt_cached_torrents = [r.get("raw", {}) for r in _rt_rows]
+                                data_changed = True
+                            rt_direct_hit_count += 1
+                        except Exception:
+                            pass
+                        rt_cache_time = now
+                elif not _loaded_from_cache and _daemon_mode and not rt_cached_rows:
+                    # Daemon mode, cache not yet populated — show empty until daemon primes
+                    pass
+
+            # ── SABnzbd fetch ─────────────────────────────────────────────────
+            if active_client == "sabnzbd" and _SAB_AVAILABLE and _sab_conn:
+                if not sab_cached_rows or (now - sab_cache_time) >= sab_fetch_interval:
+                    try:
+                        _sab_rows = _sab_client.fetch(_sab_conn)
+                        if _sab_rows or not sab_cached_rows:
+                            sab_cached_rows = _sab_rows
+                            sab_cached_torrents = [r.get("raw", {}) for r in _sab_rows]
+                            data_changed = True
+                    except Exception:
+                        pass
+                    sab_cache_time = now
+
             # ── B: Display tier — fast direct-API refresh of visible rows ──────
             if (
-                args.use_shared_cache
+                active_client == "qbit"
+                and args.use_shared_cache
                 and args.fast_refresh_interval > 0
                 and visible_hashes
                 and (now - last_fast_refresh) >= args.fast_refresh_interval
@@ -3629,7 +3923,12 @@ def main() -> int:
                     data_changed = True
                 last_fast_refresh = now
 
-            rows_to_render = cached_rows
+            if active_client == "rtorrent":
+                rows_to_render = rt_cached_rows
+            elif active_client == "sabnzbd":
+                rows_to_render = sab_cached_rows
+            else:
+                rows_to_render = cached_rows
             if scope != "all":
                 rows_to_render = [r for r in rows_to_render if state_group(r.get("raw", {}).get("state", "")) == scope]
 
@@ -3647,6 +3946,8 @@ def main() -> int:
                 if sort_field == "size": return raw.get("size") or raw.get("total_size") or 0
                 if sort_field == "dlspeed": return raw.get("dlspeed") or 0
                 if sort_field == "upspeed": return raw.get("upspeed") or 0
+                if sort_field == "hash": return row.get("hash", "")
+                if sort_field == "save_path": return row.get("save_path", "")
                 return row.get("name", "")
             rows_to_render.sort(key=sort_key, reverse=sort_desc)
             
@@ -3661,7 +3962,8 @@ def main() -> int:
             # Update selection state
             selected_row_all = None
             if selection_hash:
-                selected_row_all = next((r for r in cached_rows if r.get("hash") == selection_hash), None)
+                _active_rows = rt_cached_rows if active_client == "rtorrent" else cached_rows
+                selected_row_all = next((r for r in _active_rows if r.get("hash") == selection_hash), None)
                 if not selected_row_all:
                     selection_hash = selection_name = None
                     in_tab_view = False
@@ -3681,33 +3983,84 @@ def main() -> int:
                 need_redraw = True
                 NEED_RESIZE = False
 
-            # Build cache_info for header display
+            # Build cache_info for header display — switches on active_client
             _now_wall = time.time()
-            _fetched_at = cache_meta.get("fetched_at")
-            _cache_age: float | None = None
-            if _fetched_at is not None:
-                try:
-                    _cache_age = max(0.0, _now_wall - float(_fetched_at))
-                except Exception:
-                    pass
-            _pid_val = cache_meta.get("daemon_pid")
-            _daemon_alive = bool(_pid_val and cache_meta.get("source") not in ("daemon_idle_exit",))
-            _total_hits = cache_hit_count + direct_hit_count
-            cache_info = {
-                "enabled": args.use_shared_cache,
-                "base_path": str(_cache_base),
-                "interval_s": cache_meta.get("effective_interval_s"),
-                "cache_hits": cache_hit_count,
-                "direct_hits": direct_hit_count,
-                "daemon_running": _daemon_alive,
-                "cache_age_s": _cache_age,
-                "items": cache_meta.get("items"),
-                "last_error": cache_meta.get("last_error", ""),
-                "active_leases": cache_meta.get("active_leases", 0),
-                "qb_profile": cache_meta.get("qb_profile") or {},
-                "fast_refresh_interval": args.fast_refresh_interval,
-                "no_daemon": args.cache_no_daemon,
-            }
+            if active_client == "sabnzbd":
+                cache_info = {
+                    "enabled": False,
+                    "base_path": "",
+                    "interval_s": sab_fetch_interval,
+                    "cache_hits": 0,
+                    "direct_hits": 0,
+                    "daemon_running": False,
+                    "cache_age_s": max(0.0, _now_wall - sab_cache_time) if sab_cache_time else None,
+                    "items": len(sab_cached_rows),
+                    "last_error": _sab_client.last_error if _SAB_AVAILABLE else "",
+                    "active_leases": 0,
+                    "qb_profile": {},
+                    "fast_refresh_interval": 0,
+                    "no_daemon": True,
+                    "client_label": "sab",
+                }
+            elif active_client == "rtorrent":
+                # Read rTorrent cache meta (written by silo-rt-cache-daemon)
+                _rt_meta = {}
+                if _CC_AVAILABLE:
+                    try:
+                        _rt_meta = json.loads(_rt_meta_file.read_text(encoding="utf-8")) if _rt_meta_file.exists() else {}
+                    except Exception:
+                        pass
+                _rt_fetched = _rt_meta.get("fetched_at")
+                _rt_age: float | None = None
+                if _rt_fetched is not None:
+                    try:
+                        _rt_age = max(0.0, _now_wall - float(_rt_fetched))
+                    except Exception:
+                        pass
+                _rt_pid = _rt_meta.get("daemon_pid")
+                _rt_alive = bool(_rt_pid and _cc.daemon_running(_rt_pid_file) if _CC_AVAILABLE else False)
+                cache_info = {
+                    "enabled": _CC_AVAILABLE and _rt_daemon_script.exists(),
+                    "base_path": str(_rt_cache_base),
+                    "interval_s": _rt_meta.get("effective_interval_s"),
+                    "cache_hits": rt_cache_hit_count,
+                    "direct_hits": rt_direct_hit_count,
+                    "daemon_running": _rt_alive,
+                    "cache_age_s": _rt_age,
+                    "items": _rt_meta.get("items"),
+                    "last_error": _rt_meta.get("last_error", ""),
+                    "active_leases": _rt_meta.get("active_leases", 0),
+                    "qb_profile": _rt_profile,
+                    "fast_refresh_interval": 0,
+                    "no_daemon": False,
+                    "client_label": "rt",
+                }
+            else:
+                _fetched_at = cache_meta.get("fetched_at")
+                _cache_age: float | None = None
+                if _fetched_at is not None:
+                    try:
+                        _cache_age = max(0.0, _now_wall - float(_fetched_at))
+                    except Exception:
+                        pass
+                _pid_val = cache_meta.get("daemon_pid")
+                _daemon_alive = bool(_pid_val and cache_meta.get("source") not in ("daemon_idle_exit",))
+                cache_info = {
+                    "enabled": args.use_shared_cache,
+                    "base_path": str(_cache_base),
+                    "interval_s": cache_meta.get("effective_interval_s"),
+                    "cache_hits": cache_hit_count,
+                    "direct_hits": direct_hit_count,
+                    "daemon_running": _daemon_alive,
+                    "cache_age_s": _cache_age,
+                    "items": cache_meta.get("items"),
+                    "last_error": cache_meta.get("last_error", ""),
+                    "active_leases": cache_meta.get("active_leases", 0),
+                    "qb_profile": cache_meta.get("qb_profile") or {},
+                    "fast_refresh_interval": args.fast_refresh_interval,
+                    "no_daemon": args.cache_no_daemon,
+                    "client_label": "qbit",
+                }
 
             if data_changed or need_redraw:
                 term_w = current_term_w
@@ -3738,11 +4091,20 @@ def main() -> int:
                     divider_line = "-" * tab_display_width
 
                     # Use new v2 header
+                    if active_client == "rtorrent":
+                        _display_url = f"[rt] {rt_url}"
+                        _display_torrents = rt_cached_torrents
+                    elif active_client == "sabnzbd":
+                        _display_url = f"[sab] {_sab_conn.api_url if _sab_conn else _sab_url}"
+                        _display_torrents = sab_cached_torrents
+                    else:
+                        _display_url = api_url
+                        _display_torrents = cached_torrents
                     header_lines = draw_header_v2(
                         colors=colors,
-                        api_url=api_url,
+                        api_url=_display_url,
                         version=VERSION,
-                        torrents=cached_torrents,
+                        torrents=_display_torrents,
                         scope=scope,
                         sort_field=sort_fields[sort_index],
                         sort_desc=sort_desc,
@@ -3765,7 +4127,12 @@ def main() -> int:
                         tui_print("Selection not available on this page.")
                         tui_print(tab_divider)
                     else:
-                        available_tabs = resolve_available_tabs(opener, api_url, selected_row)
+                        _tab_rt_proxy = (_rt_client.connect(rt_url)
+                                         if active_client == "rtorrent" and _RT_AVAILABLE and rt_url
+                                         else None)
+                        available_tabs = resolve_available_tabs(opener, api_url, selected_row,
+                                                                active_client=active_client,
+                                                                rt_proxy=_tab_rt_proxy)
                         if not available_tabs: available_tabs = ["Info"]
                         active_label = tabs[active_tab]
                         if active_label not in available_tabs:
@@ -3784,17 +4151,36 @@ def main() -> int:
                         max_rows = max(10, shutil.get_terminal_size((100, 30)).lines - 15)
                         if active_label == "Info": content_lines = render_info_lines(selected_row, tab_width)
                         elif active_label == "Trackers":
-                            trackers = fetch_trackers(opener, api_url, selection_hash)
+                            # For rTorrent: prefer cached tracker data from the
+                            # cache daemon (raw["trackers"]), falling back to a
+                            # live XMLRPC call only when the cache has no entry.
+                            _cached_trackers = (
+                                (selected_row.get("raw") or {}).get("trackers")
+                                if _tab_rt_proxy is not None
+                                else None
+                            )
+                            if _cached_trackers is not None:
+                                trackers = _cached_trackers
+                            elif _tab_rt_proxy is not None:
+                                trackers = _rt_client.fetch_trackers(_tab_rt_proxy, selection_hash)
+                            else:
+                                trackers = fetch_trackers(opener, api_url, selection_hash)
                             content_lines = render_trackers_lines(trackers, tab_width)
                         elif active_label == "Content":
-                            files = fetch_files(opener, api_url, selection_hash)
+                            if _tab_rt_proxy is not None:
+                                files = _rt_client.fetch_files(_tab_rt_proxy, selection_hash)
+                            else:
+                                files = fetch_files(opener, api_url, selection_hash)
                             content_lines = render_files_lines(
                                 files,
                                 tab_width,
                                 get_content_path(selected_row.get("raw") or {}),
                             )
                         elif active_label == "Peers":
-                            peers_payload = fetch_peers(opener, api_url, selection_hash)
+                            if _tab_rt_proxy is not None:
+                                peers_payload = _rt_client.fetch_peers(_tab_rt_proxy, selection_hash)
+                            else:
+                                peers_payload = fetch_peers(opener, api_url, selection_hash)
                             content_lines = render_peers_lines(peers_payload, tab_width)
                         else: content_lines = render_mediainfo_lines(selected_row, tab_width, colors)
                         # Clamp scroll offset
@@ -3822,11 +4208,13 @@ def main() -> int:
                                 width=content_width
                             )
                         else:
+                            _display_url = f"[rt] {rt_url}" if active_client == "rtorrent" else api_url
+                            _display_torrents = rt_cached_torrents if active_client == "rtorrent" else cached_torrents
                             header_lines = draw_header_full_compact(
                                 colors=colors,
-                                api_url=api_url,
+                                api_url=_display_url,
                                 version=VERSION,
-                                torrents=cached_torrents,
+                                torrents=_display_torrents,
                                 scope=scope,
                                 sort_field=sort_fields[sort_index],
                                 sort_desc=sort_desc,
@@ -3993,6 +4381,7 @@ def main() -> int:
                     help_lines.append(f"{colors.YELLOW}Sort:{colors.RESET}        s=cycle sort field  o=toggle asc/desc")
                     help_lines.append(f"{colors.YELLOW}Filter:{colors.RESET}      f=status  c=category  #=tag  l=compound  x=pause/resume all  p=presets")
                     help_lines.append(f"{colors.YELLOW}View:{colors.RESET}        z=reset all  t=tags  d=date  h=hash  n=narrow  m=media inline  X=clear MI cache")
+                    help_lines.append(f"{colors.YELLOW}Client:{colors.RESET}      \\=cycle qBit→rTorrent→SABnzbd")
                     help_lines.append(f"{colors.YELLOW}Global:{colors.RESET}      ?=help  i=cache status  q=quit  Ctrl-Q=quit")
                     help_lines.append(f"{colors.YELLOW}Actions:{colors.RESET}     (select a torrent first)")
                     help_lines.append(f"             P=Pause/Resume  V=Verify  C=Category  E=Tags  T=Trackers  Q=QC  D=Delete")
@@ -4508,12 +4897,56 @@ def main() -> int:
                     have_full_draw = False
                     continue
 
+                # '\': cycle active client (qBit → rTorrent → SABnzbd → qBit)
+                if key == "\\":
+                    if active_client == "qbit":
+                        if _RT_AVAILABLE and rt_url:
+                            active_client = "rtorrent"
+                            rt_cached_rows = []
+                            rt_cache_time = 0.0
+                            set_banner(f"Switched to rTorrent  ({rt_url})")
+                        elif _SAB_AVAILABLE and _sab_api_key:
+                            active_client = "sabnzbd"
+                            sab_cached_rows = []
+                            sab_cache_time = 0.0
+                            set_banner(f"Switched to SABnzbd  ({_sab_conn.api_url if _sab_conn else _sab_url})")
+                        else:
+                            set_banner("No other clients configured — set rtorrent.xmlrpc_url or sabnzbd in silo.yml")
+                    elif active_client == "rtorrent":
+                        if _SAB_AVAILABLE and _sab_api_key:
+                            active_client = "sabnzbd"
+                            sab_cached_rows = []
+                            sab_cache_time = 0.0
+                            set_banner(f"Switched to SABnzbd  ({_sab_conn.api_url if _sab_conn else _sab_url})")
+                        else:
+                            active_client = "qbit"
+                            set_banner("Switched to qBittorrent")
+                    else:  # sabnzbd
+                        active_client = "qbit"
+                        set_banner("Switched to qBittorrent")
+                    have_full_draw = False
+                    continue
+
                 # Actions
                 if selection_hash and key.upper() in "PVCETQD":
                     selected_item = next((r for r in page_rows if r.get("hash") == selection_hash), None)
                     if selected_item:
                         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                        res = apply_action(opener, api_url, key.upper(), selected_item)
+                        if active_client == "rtorrent" and _RT_AVAILABLE:
+                            _rt_act = _rt_client.ACTIONS.get(key.upper())
+                            if _rt_act:
+                                _rt_proxy = _rt_client.connect(rt_url)
+                                res = _rt_act[1](_rt_proxy, selection_hash, selected_item)
+                            else:
+                                res = f"{key.upper()} not supported on rTorrent"
+                        elif active_client == "sabnzbd" and _SAB_AVAILABLE and _sab_conn:
+                            _sab_act = _sab_client.ACTIONS.get(key.upper())
+                            if _sab_act:
+                                res = _sab_act[1](_sab_conn, selection_hash, selected_item)
+                            else:
+                                res = f"{key.upper()} not supported on SABnzbd"
+                        else:
+                            res = apply_action(opener, api_url, key.upper(), selected_item)
                         set_banner(f"Action {key.upper()}: {res}")
                         tty.setraw(fd); have_full_draw = False; continue
 

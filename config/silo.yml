@@ -1,0 +1,15 @@
+downloaders:
+
+  qbittorrent:
+    api_url: "http://localhost:9003"
+    credentials_file: "/mnt/config/secrets/qbittorrent/api.env"
+
+  rtorrent:
+    # crazymax/rtorrent-rutorrent image; nginx proxies SCGI socket on port 8000
+    # exposed via gluetun: host 18000 → container 8000
+    # rpc.conf uses "location /" so any path works; /RPC2 is conventional
+    xmlrpc_url: "http://localhost:18000/RPC2"
+
+  sabnzbd:
+    api_url: "http://localhost:8787"
+    # api_key: ""   # set via SABNZBD_API_KEY env var
