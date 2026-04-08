@@ -6,7 +6,7 @@
 # Direct XMLRPC access is available only via --direct for one-off diagnostics.
 set -euo pipefail
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.2"
 RT_CONTAINER="${RT_CONTAINER:-rtorrent_vpn}"
 RT_RPC_URL="${RT_RPC_URL:-http://localhost:8000/}"
 RT_CACHE_SUMMARY="${RT_CACHE_SUMMARY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rt-cache-summary.py}"
@@ -38,7 +38,9 @@ Env:
 
 States:
   checking    — hash check in progress (d.hashing>0)
-  error       — tracker error message set (d.message non-empty)
+  error       — fatal: d.message set on incomplete item (download stuck/broken)
+  trk_warn    — informational: d.message set on complete seeding item (tracker
+                announce rejection; content is fine — peer_limit, multi_location, etc.)
   downloading — active download (state=1, incomplete, down.rate>0)
   stalledDL   — stalled download (state=1, incomplete, down.rate=0)
   seeding(up) — complete and started (uploading + stalledUP)
@@ -46,6 +48,9 @@ States:
   uploading   — seeding, actively uploading
   stoppedUP   — complete, stopped
   stoppedDL   — incomplete, stopped
+
+  Note: cache mode maps .states.error → trk_warn (pre-split; error_fatal=0 until
+  silo cache daemon emits .states.error_fatal separately).
 
 Options:
   --interval N        Poll interval seconds (default: 30)
@@ -174,14 +179,13 @@ def parse_multicall(xml):
 def derive_state(state, hashing, complete, down_rate, up_rate, message):
     if hashing > 0:
         return 'checking'
-    if message and message.strip():
-        return 'error'
     if state == 0:
         return 'stoppedUP' if complete == 1 else 'stoppedDL'
     # state == 1 (started/active)
     if complete == 0:
-        return 'downloading' if down_rate > 0 else 'stalledDL'
-    # complete == 1, started
+        # incomplete + message = download is stuck/broken (fatal)
+        return 'error' if (message and message.strip()) else ('downloading' if down_rate > 0 else 'stalledDL')
+    # complete == 1: item is seeding regardless of tracker announce result
     return 'uploading' if up_rate > 0 else 'stalledUP'
 
 raw = parse_multicall(xml)
@@ -228,30 +232,25 @@ print_dashboard() {
   local ts="$1"
   local checking="$2"
   local error="$3"
-  local down="$4"
-  local stalled_dl="$5"
-  local seeding_up="$6"
-  local stalled_up="$7"
-  local uploading="$8"
-  local stopped_up="$9"
-  local stopped_dl="${10}"
-  local total="${11}"
-  local interval_s="${12}"
-  local show_unexpected="${13}"
-  local transport_label="${14}"
-  local transport_detail="${15}"
+  local trk_warn="$4"
+  local trk_breakdown="$5"
+  local down="$6"
+  local stalled_dl="$7"
+  local seeding_up="$8"
+  local stalled_up="$9"
+  local uploading="${10}"
+  local stopped_up="${11}"
+  local stopped_dl="${12}"
+  local total="${13}"
+  local interval_s="${14}"
 
   local sep="────────────────────────"
 
   printf '── rTorrent v%s ──\n' "$SCRIPT_VERSION"
   printf '%s\n' "$ts"
-  printf '%-12s : %s\n' "transport" "$transport_label"
-  printf '%-12s : %s\n' "cache" "$transport_detail"
   printf '%s\n' "$sep"
   printf '%-12s : %5s\n' "checking"    "$checking"
   printf '%-12s : %5s\n' "error"       "$error"
-  printf '%-12s : %5s\n' "missing"     "-"
-  printf '%-12s : %5s\n' "moving"      "-"
   printf '%-12s : %5s\n' "downloading" "$down"
   printf '%-12s : %5s\n' "stalledDL"   "$stalled_dl"
   printf '%-12s : %5s\n' "seeding(up)" "$seeding_up"
@@ -259,14 +258,20 @@ print_dashboard() {
   printf '%-12s : %5s\n' "uploading"   "$uploading"
   printf '%-12s : %5s\n' "stoppedUP"   "$stopped_up"
   printf '%-12s : %5s\n' "stoppedDL"   "$stopped_dl"
-  printf '%-12s : %5s\n' "queuedUP"    "-"
-  if [[ "$show_unexpected" -eq 1 ]]; then
-    printf '%-12s : %5s\n' "unexpected↓" "-"
-  fi
   printf '%s\n' "$sep"
   printf '%-12s : %5s\n' "total"       "$total"
   printf '%s\n' "$sep"
   printf '%-12s : %4ss\n' "interval"   "$interval_s"
+  if [[ "$trk_warn" -gt 0 ]] 2>/dev/null; then
+    printf '%s\n' "$sep"
+    printf '%-12s : %5s\n' "trk_warn"  "$trk_warn"
+    if [[ -n "$trk_breakdown" ]]; then
+      while IFS=$'\t' read -r cat cnt; do
+        [[ -z "$cat" ]] && continue
+        printf '  %-10s : %5s\n' "$cat" "$cnt"
+      done <<<"$trk_breakdown"
+    fi
+  fi
 }
 
 _FORCE_REDRAW=0
@@ -283,6 +288,8 @@ while true; do
   RT_TRANSPORT_DETAIL=""
   CHECKING=0
   ERROR=0
+  TRACKER_WARN=0
+  TRACKER_WARN_BREAKDOWN=""
   DOWN=0
   STALLED_DL=0
   SEEDING_UP=0
@@ -306,26 +313,44 @@ while true; do
       RT_TRANSPORT_DETAIL="xmlrpc"
       read -r CHECKING ERROR DOWN STALLED_DL SEEDING_UP STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
         [
-          ([.[] | select(.state == "checking")]    | length),
-          ([.[] | select(.state == "error")]       | length),
-          ([.[] | select(.state == "downloading")] | length),
-          ([.[] | select(.state == "stalledDL")]   | length),
-          ([.[] | select(.state == "uploading" or .state == "stalledUP")] | length),
-          ([.[] | select(.state == "stalledUP")]   | length),
-          ([.[] | select(.state == "uploading")]   | length),
-          ([.[] | select(.state == "stoppedUP")]   | length),
-          ([.[] | select(.state == "stoppedDL")]   | length),
+          ([.[] | select(.state == "checking")]                             | length),
+          ([.[] | select(.state == "error")]                                | length),
+          ([.[] | select(.state == "downloading")]                          | length),
+          ([.[] | select(.state == "stalledDL")]                            | length),
+          ([.[] | select(.state == "uploading" or .state == "stalledUP")]   | length),
+          ([.[] | select(.state == "stalledUP")]                            | length),
+          ([.[] | select(.state == "uploading")]                            | length),
+          ([.[] | select(.state == "stoppedUP")]                            | length),
+          ([.[] | select(.state == "stoppedDL")]                            | length),
           (length),
-          (
-            group_by(.state)
-            | map({s: .[0].state, c: length})
-            | sort_by(-.c)
-            | .[:8]
-            | map("\(.s)=\(.c)")
-            | join(",")
-          )
+          (group_by(.state) | map({s: .[0].state, c: length}) | sort_by(-.c)
+           | .[:8] | map("\(.s)=\(.c)") | join(","))
         ] | @tsv
       ' <<<"$TORRENTS_JSON")"
+      # Tracker warn breakdown: complete items with non-empty d.message (parallel count, not a state)
+      TRACKER_WARN=0
+      TRACKER_WARN_BREAKDOWN=""
+      _twraw="$(jq -r '
+        def cat:
+          if test("already have [38] peer|Sorry max peers|max peers reached") then "peer_lim"
+          elif test("3 location|rate limit.*location") then "multi_loc"
+          elif test("SSL|certificate|SSL peer") then "ssl_err"
+          elif test("Timeout|Host not found|stream truncat|Connection reset|non-authorit") then "conn_err"
+          elif test("has been deleted") then "deleted"
+          elif test("passkey|InfoHash|not found in [Hh]istory|Torrent not found") then "auth_err"
+          else "other"
+          end;
+        [.[] | select(.message != "" and .state != "error")]
+        | (length | tostring),
+          (group_by(.message | cat)
+           | map({k: (.[0].message | cat), n: length})
+           | sort_by(-.n)[]
+           | "\(.k)\t\(.n)")
+      ' <<<"$TORRENTS_JSON" 2>/dev/null)" || true
+      if [[ -n "$_twraw" ]]; then
+        TRACKER_WARN="$(printf '%s' "$_twraw" | head -1)"
+        TRACKER_WARN_BREAKDOWN="$(printf '%s' "$_twraw" | tail -n +2)"
+      fi
     fi
   else
     SUMMARY_JSON=""
@@ -336,20 +361,17 @@ while true; do
     else
       RT_TRANSPORT_LABEL="cache"
       RT_TRANSPORT_DETAIL="$(jq -r '
-        [
-          (.freshness // "unknown"),
-          ("age=" + ((.cache_age_s // "?" | tostring | split(".")[0]) + "s")),
-          ("daemon=" + (if .daemon_running then "up" else "down" end)),
-          ("src=" + ((.cache_source // "unknown") | tostring))
-        ] | join(" ")
+        ((.cache_age_s // "?") | tostring | split(".")[0]) + "s" +
+        (if .freshness != "fresh" then "·" + (.freshness // "?") else "" end) +
+        (if .daemon_running == false then "·dmn↓" else "" end)
       ' <<<"$SUMMARY_JSON")"
       if [[ "$(jq -r '.ok' <<<"$SUMMARY_JSON")" != "true" ]]; then
         FETCH_ERROR="$(jq -r '.last_error // .status_error // "cache_missing"' <<<"$SUMMARY_JSON")"
       else
         read -r CHECKING ERROR DOWN STALLED_DL STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
           [
-            (.states.checking // 0),
-            (.states.error // 0),
+            ((.states.checkingDL // 0) + (.states.checkingUP // 0) + (.states.checking // 0)),
+            (.states.error_fatal // 0),
             (.states.downloading // 0),
             (.states.stalledDL // 0),
             (.states.stalledUP // 0),
@@ -360,7 +382,12 @@ while true; do
             ((.top_states // []) | join(","))
           ] | @tsv
         ' <<<"$SUMMARY_JSON")"
-        SEEDING_UP=$((STALLED_UP + UPLOADING))
+        # .states.error = old pre-split bucket = all d.message items = tracker warns (seeding)
+        # Add them into seeding counts until silo splits the bucket
+        TRACKER_WARN="$(jq -r '.states.error // 0' <<<"$SUMMARY_JSON")"
+        TRACKER_WARN_BREAKDOWN=""
+        SEEDING_UP=$((STALLED_UP + UPLOADING + TRACKER_WARN))
+        STALLED_UP=$((STALLED_UP + TRACKER_WARN))
       fi
     fi
   fi
@@ -371,14 +398,9 @@ while true; do
       printf '\033[2J\033[H'
       printf '── rTorrent v%s ── ERROR\n' "$SCRIPT_VERSION"
       printf '%s\n' "$_err_ts"
-      if [[ -n "$RT_TRANSPORT_LABEL" ]]; then
-        printf '%-12s : %s\n' "transport" "$RT_TRANSPORT_LABEL"
-      fi
-      if [[ -n "$RT_TRANSPORT_DETAIL" ]]; then
-        printf '%-12s : %s\n' "cache" "$RT_TRANSPORT_DETAIL"
-      fi
       printf '────────────────────────\n'
-      printf '%-12s : %s\n' "error" "$FETCH_ERROR"
+      printf '%-12s : %s\n' "fetch_error" "$FETCH_ERROR"
+      printf '────────────────────────\n'
       printf '%-12s : %5s\n' "total" "-"
       printf '────────────────────────\n'
       printf '%-12s : %4ss\n' "interval" "$INTERVAL_S"
@@ -399,16 +421,16 @@ while true; do
     _FORCE_REDRAW=0
     print_dashboard \
       "$(date '+%F %T')" \
-      "$CHECKING" "$ERROR" "$DOWN" "$STALLED_DL" \
+      "$CHECKING" "$ERROR" "$TRACKER_WARN" "$TRACKER_WARN_BREAKDOWN" \
+      "$DOWN" "$STALLED_DL" \
       "$SEEDING_UP" "$STALLED_UP" "$UPLOADING" \
       "$STOPPED_UP" "$STOPPED_DL" \
-      "$TOTAL" "$INTERVAL_S" 0 \
-      "$RT_TRANSPORT_LABEL" "$RT_TRANSPORT_DETAIL"
+      "$TOTAL" "$INTERVAL_S"
   else
-    printf '%s transport=%s detail=%q checking=%s error=%s downloading=%s stalledDL=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s stoppedDL=%s total=%s top=%s\n' \
+    printf '%s transport=%s detail=%q checking=%s error=%s trk_warn=%s downloading=%s stalledDL=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s stoppedDL=%s total=%s top=%s\n' \
       "$(date '+%F %T')" \
       "$RT_TRANSPORT_LABEL" "$RT_TRANSPORT_DETAIL" \
-      "$CHECKING" "$ERROR" "$DOWN" "$STALLED_DL" \
+      "$CHECKING" "$ERROR" "$TRACKER_WARN" "$DOWN" "$STALLED_DL" \
       "$SEEDING_UP" "$STALLED_UP" "$UPLOADING" \
       "$STOPPED_UP" "$STOPPED_DL" \
       "$TOTAL" "$TOP_STATES"
