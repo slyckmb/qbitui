@@ -30,7 +30,7 @@ except Exception:
 
 NAME    = "rTorrent"
 KEY     = "rtorrent"   # key used in active_client comparisons
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 
 # ── Module-level tracker cache ───────────────────────────────────────────────
 # Populated by _fetch_tracker_batch() inside fetch(); persists across daemon
@@ -242,12 +242,12 @@ def _normalize_state(state: int, is_active: int, message: str,
 
     rTorrent state logic (evaluated top-to-bottom):
       hashing=1                              → "checkingDL" / "checkingUP"
-      message != ""                          → "error"
       state=0, completed                     → "stoppedUP"  (seeded then stopped)
       state=0                                → "stoppedDL"  (paused group)
       state=1, is_active=0, completed        → "pausedUP"
       state=1, is_active=0                   → "pausedDL"
       state=1, is_active=1, size=0, dl>0     → "metaDL"     (magnet, no metadata yet)
+      state=1, is_active=1, incomplete, message != "" → "error"
       state=1, is_active=1, dl_rate > 0      → "downloading"
       state=1, is_active=1, completed, up>0  → "uploading"
       state=1, is_active=1, completed        → "stalledUP"  (seeding, no peers)
@@ -256,8 +256,6 @@ def _normalize_state(state: int, is_active: int, message: str,
     completed = size_bytes > 0 and completed_bytes >= size_bytes
     if hashing:
         return "checkingUP" if completed else "checkingDL"
-    if message:
-        return "error"
     if state == 0:
         return "stoppedUP" if completed else "stoppedDL"
     if is_active == 0:
@@ -265,6 +263,8 @@ def _normalize_state(state: int, is_active: int, message: str,
     # state=1, is_active=1 — active
     if size_bytes == 0 and dl_rate > 0:
         return "metaDL"   # magnet still downloading metadata
+    if not completed and message:
+        return "error"
     if dl_rate > 0:
         return "downloading"
     if completed:
