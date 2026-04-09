@@ -203,10 +203,12 @@ def _find_tracker_registry() -> Path:
     mnt = Path("/mnt/config/tools/traktor/config/tracker-registry.yml")
     if mnt.exists():
         return mnt
-    # Sibling traktor repo: tools/traktor/ when silo is at tools/silo/
-    sibling = Path(__file__).parent.parent.parent / "traktor" / "config" / "tracker-registry.yml"
-    if sibling.exists():
-        return sibling
+    # Worktree layouts insert extra parents (for example .agent/worktrees/<id>).
+    # Walk upward until we can resolve the real tools/traktor sibling repo.
+    for parent in Path(__file__).resolve().parents:
+        sibling = parent.parent / "traktor" / "config" / "tracker-registry.yml"
+        if sibling.exists():
+            return sibling
     return Path(__file__).parent.parent / "config" / "tracker-registry.yml"
 
 TRACKER_REGISTRY_FILE = _find_tracker_registry()
@@ -1865,6 +1867,16 @@ def resolve_tracker_from_tags(tags_value: str, tracker_keyword_map: dict[str, st
     return "-"
 
 
+def tracker_label_from_url(tracker_url: str) -> str:
+    tracker_url = str(tracker_url or "").strip()
+    if not tracker_url:
+        return "-"
+    try:
+        return urllib.parse.urlparse(tracker_url).hostname or tracker_url or "-"
+    except Exception:
+        return tracker_url or "-"
+
+
 def build_rows(
     torrents: list[dict],
     tracker_keyword_map: dict[str, str],
@@ -1910,6 +1922,8 @@ def build_rows(
                             break
                     except re.error:
                         pass
+        if _trk == "-":
+            _trk = tracker_label_from_url(t.get("tracker") or "")
         rows.append({
             "name": t.get("name", ""),
             "save_path": (t.get("save_path") or "").rstrip("/") or "-",
