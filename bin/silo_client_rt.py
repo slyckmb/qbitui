@@ -13,6 +13,7 @@ build_rows() output).
 
 import json
 import os
+import re
 import subprocess
 import time
 import urllib.parse
@@ -30,7 +31,7 @@ except Exception:
 
 NAME    = "rTorrent"
 KEY     = "rtorrent"   # key used in active_client comparisons
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 
 # ── Module-level tracker cache ───────────────────────────────────────────────
 # Populated by _fetch_tracker_batch() inside fetch(); persists across daemon
@@ -41,6 +42,7 @@ _tracker_cache: dict      = {}   # hash_lower -> list[dict]  (url/status/tier)
 _tracker_cache_time: float = 0.0
 _TRACKER_CACHE_TTL: float  = 300.0   # seconds between full tracker refreshes
 _TRACKER_BATCH_SIZE: int   = 500     # t.multicall calls per system.multicall chunk
+_TRACKER_URL_PATTERN_MAP: dict[str, str] | None = None
 
 # ── rTorrent multicall fields ────────────────────────────────────────────────
 #
@@ -99,6 +101,62 @@ def _url_domain(url: str) -> str:
         return urllib.parse.urlparse(url).hostname or "-"
     except Exception:
         return "-"
+
+
+def _find_tracker_registry() -> Path:
+    env_path = os.environ.get("QBIT_TRACKER_REGISTRY_FILE", "")
+    if env_path:
+        return Path(env_path)
+    mnt = Path("/mnt/config/tools/traktor/config/tracker-registry.yml")
+    if mnt.exists():
+        return mnt
+    for parent in Path(__file__).resolve().parents:
+        sibling = parent.parent / "traktor" / "config" / "tracker-registry.yml"
+        if sibling.exists():
+            return sibling
+    return Path(__file__).parent.parent / "config" / "tracker-registry.yml"
+
+
+def _load_tracker_url_pattern_map(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        import yaml  # type: ignore
+    except Exception:
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+        trackers = data.get("trackers") or {}
+        result: dict[str, str] = {}
+        for tracker_key, tracker_cfg in trackers.items():
+            if not isinstance(tracker_cfg, dict):
+                continue
+            key = str(tracker_key).strip()
+            if not key:
+                continue
+            qbm = tracker_cfg.get("qbitmanage") or {}
+            pattern = str(qbm.get("tracker_url_pattern") or "").strip()
+            if pattern:
+                result[pattern] = key
+        return result
+    except Exception:
+        return {}
+
+
+def _tracker_label_from_url(tracker_url: str) -> str:
+    tracker_url = str(tracker_url or "").strip()
+    if not tracker_url:
+        return "-"
+    global _TRACKER_URL_PATTERN_MAP
+    if _TRACKER_URL_PATTERN_MAP is None:
+        _TRACKER_URL_PATTERN_MAP = _load_tracker_url_pattern_map(_find_tracker_registry())
+    for pattern, key in (_TRACKER_URL_PATTERN_MAP or {}).items():
+        try:
+            if re.search(pattern, tracker_url, re.IGNORECASE):
+                return key
+        except re.error:
+            continue
+    return _url_domain(tracker_url) or "-"
 
 
 def _fetch_tracker_batch(
@@ -419,15 +477,15 @@ def _process_results(
                 else trackers[0]["url"] if trackers
                 else ""
             )
-            domain    = _url_domain(primary_url) if primary_url else "-"
+            tracker_label = _tracker_label_from_url(primary_url) if primary_url else "-"
             http_urls = [t["url"] for t in trackers if t["url"].startswith("http")]
             raw = row["raw"]
-            raw["tracker"]             = domain
+            raw["tracker"]             = primary_url or "-"
             raw["trackers"]            = trackers
             raw["trackers_http"]       = http_urls
             raw["trackers_count"]      = len(trackers)
             raw["real_trackers_count"] = len(working)
-            row["tracker"]             = domain
+            row["tracker"]             = tracker_label
 
     return rows
 

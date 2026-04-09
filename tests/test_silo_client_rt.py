@@ -69,3 +69,45 @@ def test_normalize_state_marks_active_incomplete_message_as_error():
     )
 
     assert state == "error"
+
+
+def test_tracker_label_from_url_prefers_registry_pattern(monkeypatch, tmp_path):
+    registry = tmp_path / "tracker-registry.yml"
+    registry.write_text(
+        "trackers:\n"
+        "  torrentday:\n"
+        "    qbitmanage:\n"
+        "      tracker_url_pattern: 'torrentday|td\\.jumbohostpro\\.eu|sync\\.td-peers\\.com'\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(silo_client_rt, "_TRACKER_URL_PATTERN_MAP", None)
+    monkeypatch.setattr(silo_client_rt, "_find_tracker_registry", lambda: registry)
+
+    label = silo_client_rt._tracker_label_from_url(
+        "http://td.jumbohostpro.eu/tNtOztQuQIzYElZyDuuJIeLJW8chntAH/announce"
+    )
+
+    assert label == "torrentday"
+
+
+def test_tracker_label_from_url_falls_back_to_hostname(monkeypatch):
+    monkeypatch.setattr(silo_client_rt, "_TRACKER_URL_PATTERN_MAP", {})
+
+    label = silo_client_rt._tracker_label_from_url("https://example.tracker.invalid/announce")
+
+    assert label == "example.tracker.invalid"
+
+
+def test_find_tracker_registry_resolves_sibling_traktor_from_worktree(monkeypatch, tmp_path):
+    silo_root = tmp_path / "tools" / "silo"
+    worktree_bin = silo_root / ".agent" / "worktrees" / "chat-123" / "bin"
+    worktree_bin.mkdir(parents=True)
+    registry = tmp_path / "tools" / "traktor" / "config" / "tracker-registry.yml"
+    registry.parent.mkdir(parents=True)
+    registry.write_text("trackers: {}\n", encoding="utf-8")
+
+    monkeypatch.delenv("QBIT_TRACKER_REGISTRY_FILE", raising=False)
+    monkeypatch.setattr(silo_client_rt, "__file__", str(worktree_bin / "silo_client_rt.py"))
+
+    assert silo_client_rt._find_tracker_registry() == registry
