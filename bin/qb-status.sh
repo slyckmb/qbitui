@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Version: 1.2.4
+# Version: 1.2.5
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.4"
+SCRIPT_VERSION="1.2.5"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QBIT_URL="${QBIT_URL:-http://localhost:9003}"
 QBIT_USER="${QBIT_USER:-${QBITTORRENTAPI_USERNAME:-admin}}"
@@ -268,20 +268,21 @@ pause_with_fallback() {
 print_dashboard() {
   local ts="$1"
   local checking="$2"
-  local missing="$3"
-  local moving="$4"
-  local down="$5"
-  local stalled_dl="$6"
-  local seeding_up="$7"
-  local stopped_dl="$8"
-  local stalled_up="$9"
-  local uploading="${10}"
-  local stopped_up="${11}"
-  local queued_up="${12}"
-  local unexpected_down="${13}"
-  local total="${14}"
-  local interval_s="${15}"
-  local show_unexpected="${16}"
+  local error_count="$3"
+  local missing="$4"
+  local moving="$5"
+  local down="$6"
+  local stalled_dl="$7"
+  local seeding_up="$8"
+  local stopped_dl="$9"
+  local stalled_up="${10}"
+  local uploading="${11}"
+  local stopped_up="${12}"
+  local queued_up="${13}"
+  local unexpected_down="${14}"
+  local total="${15}"
+  local interval_s="${16}"
+  local show_unexpected="${17}"
 
   local sep="────────────────────────"
 
@@ -289,7 +290,7 @@ print_dashboard() {
   printf '%s\n' "$ts"
   printf '%s\n' "$sep"
   printf '%-12s : %5s\n' "checking" "$checking"
-  printf '%-12s : %5s\n' "error" "-"
+  printf '%-12s : %5s\n' "error" "$error_count"
   printf '%-12s : %5s\n' "missing" "$missing"
   printf '%-12s : %5s\n' "moving" "$moving"
   printf '%-12s : %5s\n' "downloading" "$down"
@@ -385,9 +386,10 @@ while true; do
     continue
   fi
 
-  read -r CHECKING MISSING MOVING DOWN STALLED_DL UP COUNT_ZERO COUNT_PARTIAL STOPPED_UP STOPPED_DL STALLED_UP UPLOADING QUEUED_UP TOTAL TOP_STATES <<<"$(jq -r '
+  read -r CHECKING ERROR_COUNT MISSING MOVING DOWN STALLED_DL UP COUNT_ZERO COUNT_PARTIAL STOPPED_UP STOPPED_DL STALLED_UP UPLOADING QUEUED_UP TOTAL TOP_STATES <<<"$(jq -r '
     [
       ([.[] | (.state // "" | ascii_downcase) | select(startswith("checking"))] | length),
+      ([.[] | select((.state // "" | ascii_downcase) == "error")] | length),
       ([.[] | select((.state // "" | ascii_downcase) == "missingfiles")] | length),
       ([.[] | select((.state // "" | ascii_downcase) == "moving")] | length),
       ([.[] | select(
@@ -485,7 +487,7 @@ while true; do
     _FORCE_REDRAW=0
     print_dashboard \
       "$(date '+%F %T')" \
-      "$CHECKING" "$MISSING" "$MOVING" "$DOWN" "$STALLED_DL" "$UP" \
+      "$CHECKING" "$ERROR_COUNT" "$MISSING" "$MOVING" "$DOWN" "$STALLED_DL" "$UP" \
       "$STOPPED_DL" "$STALLED_UP" "$UPLOADING" "$STOPPED_UP" "$QUEUED_UP" \
       "${#UNEXPECTED_DOWN[@]}" "$TOTAL" "$INTERVAL_S" "$ENFORCE_PAUSED_DL"
   else
