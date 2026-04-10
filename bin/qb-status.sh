@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Version: 1.2.5
+# Version: 1.3.3
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.5"
+SCRIPT_VERSION="1.3.3"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QBIT_URL="${QBIT_URL:-http://localhost:9003}"
 QBIT_USER="${QBIT_USER:-${QBITTORRENTAPI_USERNAME:-admin}}"
@@ -22,6 +22,17 @@ CACHE_FILE_FALLBACK="${QBIT_CACHE_FALLBACK_FILE:-$HOME/.cache/hashall-qb/torrent
 CACHE_CLIENT_ID="$(basename "$0"):$$"
 CACHE_PYTHON="${QBIT_CACHE_PYTHON:-}"
 declare -a ALLOW_HASHES=()
+
+R=$'\033[0m'
+DIM=$'\033[2m'
+RED=$'\033[31m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+CYAN=$'\033[36m'
+BLUE=$'\033[34m'
+SHOW_HELP=0
+CACHE_FILE_PATH=""
+CACHE_META_PATH=""
 
 usage() {
   cat <<USAGE
@@ -264,55 +275,228 @@ pause_with_fallback() {
   esac
 }
 
-# Print the dashboard panel to stdout.
+strip_ansi() {
+  sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g' <<<"$1"
+}
+
+visible_width() {
+  local raw
+  raw="$(strip_ansi "$1")"
+  printf '%s' "${#raw}"
+}
+
+repeat_char() {
+  local char="$1" count="$2"
+  (( count <= 0 )) && return 0
+  local out="" i
+  for ((i = 0; i < count; i++)); do
+    out+="$char"
+  done
+  printf '%s' "$out"
+}
+
+color_num() {
+  local value="$1" sev="$2"
+  case "$sev" in
+    good) printf '%s%s%s' "$GREEN" "$value" "$R" ;;
+    watch) printf '%s%s%s' "$YELLOW" "$value" "$R" ;;
+    warn) printf '%s%s%s' "$BLUE" "$value" "$R" ;;
+    bad) printf '%s%s%s' "$RED" "$value" "$R" ;;
+    info) printf '%s%s%s' "$CYAN" "$value" "$R" ;;
+    dim) printf '%s%s%s' "$DIM" "$value" "$R" ;;
+    *) printf '%s' "$value" ;;
+  esac
+}
+
+cache_age_sev() {
+  local age="${1:-}"
+  [[ -z "$age" ]] && { printf 'dim'; return; }
+  python3 - <<'PY' "$age"
+import sys
+age=float(sys.argv[1])
+print('good' if age <= 10 else 'watch' if age <= 30 else 'bad')
+PY
+}
+
+cache_status_text() {
+  local detail="$1" age="$2"
+  local status
+  status="${detail:-fresh}"
+  printf '%s·%ss' "$status" "$age"
+}
+
+box_top() {
+  local label="$1" width="$2"
+  local core=" ${label} "
+  local pad
+  pad=$((width - $(visible_width "$core")))
+  (( pad < 1 )) && pad=1
+  printf '┌%s%s┐\n' "$core" "$(repeat_char '─' "$pad")"
+}
+
+box_line() {
+  local text="$1" width="$2"
+  local vis pad
+  vis="$(visible_width "$text")"
+  pad=$((width - vis))
+  (( pad < 0 )) && pad=0
+  printf '│%s%s│\n' "$text" "$(repeat_char ' ' "$pad")"
+}
+
+box_bar() {
+  local label="$1" width="$2"
+  local core="┤${label}├"
+  local core_w left right
+  core_w="$(visible_width "$core")"
+  left=$(((width - core_w) / 2))
+  right=$((width - core_w - left))
+  printf '├%s%s%s┤\n' "$(repeat_char '─' "$left")" "$core" "$(repeat_char '─' "$right")"
+}
+
+box_footer() {
+  local label="$1" width="$2"
+  local core="┤${label}├"
+  local fill left right
+  fill=$((width - $(visible_width "$core")))
+  left=$((fill / 2))
+  right=$((fill - left))
+  printf '└%s%s%s┘\n' "$(repeat_char '─' "$left")" "$core" "$(repeat_char '─' "$right")"
+}
+
+reset_qb_cache() {
+  local cf="${CACHE_FILE_PATH:-$CACHE_FILE_FALLBACK}"
+  local mf="${CACHE_META_PATH:-${cf%.json}.meta.json}"
+  rm -f "$cf" "$mf"
+  QBIT_URL="$QBIT_URL" QBIT_USER="$QBIT_USER" QBIT_PASS="$QBIT_PASS" \
+    "$CACHE_PYTHON" "$CACHE_AGENT" --ensure-daemon --max-age 0 >/dev/null 2>&1 || true
+}
+
 print_dashboard() {
   local ts="$1"
-  local checking="$2"
-  local error_count="$3"
-  local missing="$4"
-  local moving="$5"
-  local down="$6"
-  local stalled_dl="$7"
-  local seeding_up="$8"
-  local stopped_dl="$9"
-  local stalled_up="${10}"
-  local uploading="${11}"
-  local stopped_up="${12}"
-  local queued_up="${13}"
-  local unexpected_down="${14}"
-  local total="${15}"
-  local interval_s="${16}"
-  local show_unexpected="${17}"
+  local transport_label="$2"
+  local transport_detail="$3"
+  local cache_age_s="$4"
+  local active_leases="$5"
+  local checking="$6"
+  local error_count="$7"
+  local missing="$8"
+  local moving="$9"
+  local down="${10}"
+  local stalled_dl="${11}"
+  local stopped_dl="${12}"
+  local stalled_up="${13}"
+  local uploading="${14}"
+  local stopped_up="${15}"
+  local queued_up="${16}"
+  local unexpected_down="${17}"
+  local total="${18}"
+  local show_unexpected="${19}"
+  local cache_dot cache_age_color ts_short title footer_label cache_status
+  local cache_line1 cache_line2 attn_total dl_total ul_total
+  local -a lines=() bars=()
+  local width=0 vis
 
-  local sep="────────────────────────"
-
-  printf '── qBittorrent v%s ──\n' "$SCRIPT_VERSION"
-  printf '%s\n' "$ts"
-  printf '%s\n' "$sep"
-  printf '%-12s : %5s\n' "checking" "$checking"
-  printf '%-12s : %5s\n' "error" "$error_count"
-  printf '%-12s : %5s\n' "missing" "$missing"
-  printf '%-12s : %5s\n' "moving" "$moving"
-  printf '%-12s : %5s\n' "downloading" "$down"
-  printf '%-12s : %5s\n' "stalledDL" "$stalled_dl"
-  printf '%-12s : %5s\n' "seeding(up)" "$seeding_up"
-  printf '%-12s : %5s\n' "stalledUP" "$stalled_up"
-  printf '%-12s : %5s\n' "uploading" "$uploading"
-  printf '%-12s : %5s\n' "stoppedUP" "$stopped_up"
-  printf '%-12s : %5s\n' "stoppedDL" "$stopped_dl"
-  printf '%-12s : %5s\n' "queuedUP" "$queued_up"
-  if [[ "$show_unexpected" -eq 1 ]]; then
-    printf '%-12s : %5s\n' "unexpected↓" "$unexpected_down"
+  cache_dot="${GREEN}●${R}"
+  [[ -n "$transport_detail" ]] && cache_dot="${YELLOW}●${R}"
+  [[ "$transport_detail" == *dmn↓* || "$transport_detail" == *unavailable* ]] && cache_dot="${RED}●${R}"
+  cache_age_color="$(cache_age_sev "$cache_age_s")"
+  ts_short="$(date -d "$ts" '+%m-%d-%y %H:%M' 2>/dev/null || printf '%s' "$ts")"
+  attn_total=$((error_count + missing + moving + unexpected_down))
+  dl_total=$((down + stopped_dl))
+  ul_total=$((uploading + stalled_up + stopped_up + queued_up))
+  title="qBittorrent v${SCRIPT_VERSION}"
+  if [[ "$transport_label" == "Direct" ]]; then
+    cache_line1="Direct: ${cache_dot} $(color_num "${INTERVAL_S}s" info) ${DIM}·${R} api"
+    cache_line2="live"
+  else
+    cache_line1="Cache: ${cache_dot} $(color_num "${INTERVAL_S}s" info) ${DIM}·${R} ttl$(color_num "${CACHE_MAX_AGE}s" info)"
+    cache_status="$(cache_status_text "${transport_detail:-fresh}" "${cache_age_s:-0}")"
+    cache_line2="$(color_num "$cache_status" "$cache_age_color")"
   fi
-  printf '%s\n' "$sep"
-  printf '%-12s : %5s\n' "total" "$total"
-  printf '%s\n' "$sep"
-  printf '%-12s : %4ss\n' "interval" "$interval_s"
+
+  lines+=("$cache_line1" "$cache_line2")
+  lines+=("$(printf '%-9s' "checking") : $(printf '%5s' "$(color_num "$checking" watch)")")
+  lines+=("$(printf '%-9s' "error") : $(printf '%5s' "$(color_num "$error_count" bad)")")
+  lines+=("$(printf '%-9s' "missing") : $(printf '%5s' "$(color_num "$missing" bad)")")
+  lines+=("$(printf '%-9s' "moving") : $(printf '%5s' "$(color_num "$moving" watch)")")
+  if [[ "$show_unexpected" -eq 1 ]]; then
+    lines+=("$(printf '%-9s' "unexpected") : $(printf '%5s' "$(color_num "$unexpected_down" bad)")")
+  fi
+  lines+=("$(printf '%-9s' "active") : $(printf '%5s' "$(color_num "$down" good)")")
+  lines+=("$(printf '%-9s' "stalled") : $(printf '%5s' "$(color_num "$stalled_dl" watch)")")
+  lines+=("$(printf '%-9s' "stopped") : $(printf '%5s' "$(color_num "$stopped_dl" watch)")")
+  lines+=("$(printf '%-9s' "active") : $(printf '%5s' "$(color_num "$uploading" good)")")
+  lines+=("$(printf '%-9s' "idle") : $(printf '%5s' "$(color_num "$stalled_up" good)")")
+  lines+=("$(printf '%-9s' "queued") : $(printf '%5s' "$(color_num "$queued_up" watch)")")
+  lines+=("$(printf '%-9s' "stopped") : $(printf '%5s' "$(color_num "$stopped_up" dim)")")
+  bars+=("Attention:$(color_num "$attn_total" $([[ "$attn_total" -gt 0 ]] && echo watch || echo dim))")
+  bars+=("DL:$(color_num "$dl_total" $([[ "$dl_total" -gt 0 ]] && echo watch || echo dim))")
+  bars+=("UL:$(color_num "$ul_total" good)")
+  bars+=("total:$(color_num "$total" info)")
+
+  for line in "$title" "${lines[@]}" "${bars[@]}" "$ts_short"; do
+    vis="$(visible_width "$line")"
+    (( vis > width )) && width="$vis"
+  done
+  if [[ "$SHOW_HELP" -eq 1 ]]; then
+    vis="$(visible_width 'q quit  c cache  d direct  r reset  +/- interval  ? help')"
+    (( vis > width )) && width="$vis"
+  fi
+
+  box_top "$title" "$width"
+  box_line "$cache_line1" "$width"
+  box_line "$cache_line2" "$width"
+  box_bar "${bars[0]}" "$width"
+  local idx=2
+  box_line "${lines[$idx]}" "$width"; ((idx++))
+  box_line "${lines[$idx]}" "$width"; ((idx++))
+  box_line "${lines[$idx]}" "$width"; ((idx++))
+  box_line "${lines[$idx]}" "$width"; ((idx++))
+  if [[ "$show_unexpected" -eq 1 ]]; then
+    box_line "${lines[$idx]}" "$width"; ((idx++))
+  fi
+  box_bar "${bars[1]}" "$width"
+  box_line "${lines[$idx]}" "$width"; ((idx++))
+  box_line "${lines[$idx]}" "$width"; ((idx++))
+  box_line "${lines[$idx]}" "$width"; ((idx++))
+  box_bar "${bars[2]}" "$width"
+  box_line "${lines[$idx]}" "$width"; ((idx++))
+  box_line "${lines[$idx]}" "$width"; ((idx++))
+  box_line "${lines[$idx]}" "$width"; ((idx++))
+  box_line "${lines[$idx]}" "$width"
+  box_bar "${bars[3]}" "$width"
+  footer_label="$ts_short"
+  [[ "$SHOW_HELP" -eq 1 ]] && footer_label='q quit  c cache  d direct  r reset  +/- interval  ? help'
+  box_footer "$footer_label" "$width"
 }
 
 _FORCE_REDRAW=0
 _on_winch() { _FORCE_REDRAW=1; }
 [[ "$DASHBOARD" -eq 1 ]] && trap '_on_winch' SIGWINCH
+
+handle_dashboard_key() {
+  local key="$1"
+  case "$key" in
+    q) exit 0 ;;
+    c) USE_CACHE=1; _FORCE_REDRAW=1 ;;
+    d) USE_CACHE=0; _FORCE_REDRAW=1 ;;
+    r) reset_qb_cache; USE_CACHE=1; _FORCE_REDRAW=1 ;;
+    '+') ((INTERVAL_S > 1)) && INTERVAL_S=$((INTERVAL_S - 1)); _FORCE_REDRAW=1 ;;
+    '-') INTERVAL_S=$((INTERVAL_S + 1)); _FORCE_REDRAW=1 ;;
+    '?') SHOW_HELP=$((1 - SHOW_HELP)); _FORCE_REDRAW=1 ;;
+  esac
+}
+
+dashboard_pause() {
+  local deadline key
+  deadline=$((SECONDS + INTERVAL_S))
+  while (( SECONDS < deadline )); do
+    if read -rsn1 -t 0.2 key; then
+      handle_dashboard_key "$key"
+      return 0
+    fi
+  done
+}
 
 iteration=0
 
@@ -321,7 +505,24 @@ while true; do
 
   FETCH_ERROR=""
   TORRENTS_JSON="[]"
+  CACHE_TRANSPORT_LABEL="Direct"
+  CACHE_TRANSPORT_DETAIL=""
+  CACHE_AGE_S=""
+  CACHE_ACTIVE_LEASES="0"
   if [[ "$USE_CACHE" -eq 1 ]]; then
+    _status=""
+    if _status="$(QBIT_URL="$QBIT_URL" QBIT_USER="$QBIT_USER" QBIT_PASS="$QBIT_PASS" \
+      "$CACHE_PYTHON" "$CACHE_AGENT" --status 2>/dev/null)" && jq -e . >/dev/null 2>&1 <<<"$_status"; then
+      CACHE_TRANSPORT_LABEL="Cache"
+      CACHE_AGE_S="$(jq -r 'if .cache_age_s == null then "" else ((.cache_age_s | tonumber) * 10 | floor / 10 | tostring) end' <<<"$_status")"
+      CACHE_ACTIVE_LEASES="$(jq -r '.active_lease_count // 0' <<<"$_status")"
+      CACHE_FILE_PATH="$(jq -r '.cache_file // empty' <<<"$_status")"
+      CACHE_META_PATH="$(jq -r '.meta_file // empty' <<<"$_status")"
+      CACHE_TRANSPORT_DETAIL="$(jq -r '
+        (if .daemon_running == true then "" else "dmn↓" end)
+      ' <<<"$_status")"
+      [[ "$CACHE_TRANSPORT_DETAIL" == "null" ]] && CACHE_TRANSPORT_DETAIL=""
+    fi
     _raw=""
     if ! _raw="$(QBIT_URL="$QBIT_URL" QBIT_USER="$QBIT_USER" QBIT_PASS="$QBIT_PASS" \
       "$CACHE_PYTHON" "$CACHE_AGENT" \
@@ -366,12 +567,15 @@ while true; do
     if [[ "$DASHBOARD" -eq 1 ]]; then
       printf '\033[2J\033[H'
       printf '── qBittorrent v%s ── ERROR\n' "$SCRIPT_VERSION"
+      if [[ "$USE_CACHE" -eq 1 ]]; then
+        printf 'Cache: ● %ss%s\n' "$INTERVAL_S" "${CACHE_AGE_S:+  age ${CACHE_AGE_S}s}"
+      else
+        printf 'Direct: ● %ss\n' "$INTERVAL_S"
+      fi
       printf '%s\n' "$_err_ts"
       printf '────────────────────────\n'
       printf '%-12s : %s\n' "error" "$FETCH_ERROR"
       printf '%-12s : %5s\n' "total" "-"
-      printf '────────────────────────\n'
-      printf '%-12s : %4ss\n' "interval" "$INTERVAL_S"
       _FORCE_REDRAW=0
     else
       printf '%s error fetch_error=%s\n' "$_err_ts" "$FETCH_ERROR"
@@ -487,9 +691,10 @@ while true; do
     _FORCE_REDRAW=0
     print_dashboard \
       "$(date '+%F %T')" \
-      "$CHECKING" "$ERROR_COUNT" "$MISSING" "$MOVING" "$DOWN" "$STALLED_DL" "$UP" \
+      "$CACHE_TRANSPORT_LABEL" "$CACHE_TRANSPORT_DETAIL" "$CACHE_AGE_S" "$CACHE_ACTIVE_LEASES" \
+      "$CHECKING" "$ERROR_COUNT" "$MISSING" "$MOVING" "$DOWN" "$STALLED_DL" \
       "$STOPPED_DL" "$STALLED_UP" "$UPLOADING" "$STOPPED_UP" "$QUEUED_UP" \
-      "${#UNEXPECTED_DOWN[@]}" "$TOTAL" "$INTERVAL_S" "$ENFORCE_PAUSED_DL"
+      "${#UNEXPECTED_DOWN[@]}" "$TOTAL" "$ENFORCE_PAUSED_DL"
   else
     printf '%s checking=%s missing=%s moving=%s down=%s up=%s unexpected_down=%s paused_now=%s count_zero=%s count_partial=%s top=%s stoppedUP=%s stoppedDL=%s stalledUP=%s uploading=%s queuedUP=%s\n' \
       "$(date '+%F %T')" "$CHECKING" "$MISSING" "$MOVING" "$DOWN" "$UP" "${#UNEXPECTED_DOWN[@]}" "$paused_now" "$COUNT_ZERO" "$COUNT_PARTIAL" "$TOP_STATES" "$STOPPED_UP" "$STOPPED_DL" "$STALLED_UP" "$UPLOADING" "$QUEUED_UP"
@@ -511,8 +716,12 @@ while true; do
     exit 0
   fi
 
-  sleep "$INTERVAL_S" &
-  _SLEEP_PID=$!
-  wait "$_SLEEP_PID" 2>/dev/null || true
-  kill "$_SLEEP_PID" 2>/dev/null || true
+  if [[ "$DASHBOARD" -eq 1 ]]; then
+    dashboard_pause
+  else
+    sleep "$INTERVAL_S" &
+    _SLEEP_PID=$!
+    wait "$_SLEEP_PID" 2>/dev/null || true
+    kill "$_SLEEP_PID" 2>/dev/null || true
+  fi
 done
