@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Version: 1.1.0
+# Version: 1.3.2
 # rt-watch.sh — rTorrent state dashboard
 #
 # Reads rTorrent state from the shared silo cache by default.
 # Direct XMLRPC access is available only via --direct for one-off diagnostics.
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.2"
+SCRIPT_VERSION="1.3.2"
 RT_CONTAINER="${RT_CONTAINER:-rtorrent_vpn}"
 RT_RPC_URL="${RT_RPC_URL:-http://localhost:8000/}"
 RT_CACHE_SUMMARY="${RT_CACHE_SUMMARY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rt-cache-summary.py}"
@@ -19,6 +19,16 @@ UNTIL_CLEAR=0
 MAX_ITERATIONS=0
 DASHBOARD=0
 DIRECT_MODE=0
+
+R=$'\033[0m'
+DIM=$'\033[2m'
+BOLD=$'\033[1m'
+RED=$'\033[31m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+BLUE=$'\033[34m'
+CYAN=$'\033[36m'
+SHOW_HELP=0
 
 usage() {
   cat <<USAGE
@@ -43,7 +53,6 @@ States:
                 announce rejection; content is fine — peer_limit, multi_location, etc.)
   downloading — active download (state=1, incomplete, down.rate>0)
   stalledDL   — stalled download (state=1, incomplete, down.rate=0)
-  seeding(up) — complete and started (uploading + stalledUP)
   stalledUP   — seeding, no upload activity
   uploading   — seeding, actively uploading
   stoppedUP   — complete, stopped
@@ -227,56 +236,238 @@ _rt_fetch_cache_summary() {
     --max-age "$RT_CACHE_MAX_AGE"
 }
 
-# ── Dashboard renderer ────────────────────────────────────────────────────────
+strip_ansi() {
+  sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g' <<<"$1"
+}
+
+visible_width() {
+  local raw
+  raw="$(strip_ansi "$1")"
+  printf '%s' "${#raw}"
+}
+
+repeat_char() {
+  local char="$1" count="$2"
+  (( count <= 0 )) && return 0
+  local out="" i
+  for ((i = 0; i < count; i++)); do
+    out+="$char"
+  done
+  printf '%s' "$out"
+}
+
+color_num() {
+  local value="$1" sev="$2"
+  case "$sev" in
+    good) printf '%s%s%s' "$GREEN" "$value" "$R" ;;
+    watch) printf '%s%s%s' "$YELLOW" "$value" "$R" ;;
+    warn) printf '%s%s%s' "$BLUE" "$value" "$R" ;;
+    bad) printf '%s%s%s' "$RED" "$value" "$R" ;;
+    info) printf '%s%s%s' "$CYAN" "$value" "$R" ;;
+    dim) printf '%s%s%s' "$DIM" "$value" "$R" ;;
+    *) printf '%s' "$value" ;;
+  esac
+}
+
+cache_age_sev() {
+  local age="${1:-}"
+  [[ -z "$age" ]] && { printf 'dim'; return; }
+  python3 - <<'PY' "$age"
+import sys
+age=float(sys.argv[1])
+print('good' if age <= 10 else 'watch' if age <= 60 else 'bad')
+PY
+}
+
+cache_status_text() {
+  local detail="$1" age="$2"
+  local freshness suffix
+  freshness="fresh"
+  [[ "$detail" == *stale* ]] && freshness="stale"
+  [[ "$detail" == *missing* ]] && freshness="missing"
+  suffix="${detail//stale/}"
+  suffix="${suffix//missing/}"
+  suffix="${suffix//fresh/}"
+  suffix="${suffix#·}"
+  suffix="${suffix%·}"
+  if [[ -n "$suffix" ]]; then
+    printf '%s:%s·%ss' "$freshness" "$suffix" "$age"
+  else
+    printf '%s·%ss' "$freshness" "$age"
+  fi
+}
+
+box_top() {
+  local label="$1" width="$2"
+  local core=" ${label} "
+  local pad
+  pad=$((width - $(visible_width "$core")))
+  (( pad < 1 )) && pad=1
+  printf '┌%s%s┐\n' "$core" "$(repeat_char '─' "$pad")"
+}
+
+box_line() {
+  local text="$1" width="$2"
+  local vis pad
+  vis="$(visible_width "$text")"
+  pad=$((width - vis))
+  (( pad < 0 )) && pad=0
+  printf '│%s%s│\n' "$text" "$(repeat_char ' ' "$pad")"
+}
+
+box_bar() {
+  local label="$1" width="$2"
+  local core="┤${label}├"
+  local core_w left right
+  core_w="$(visible_width "$core")"
+  left=$(((width - core_w) / 2))
+  right=$((width - core_w - left))
+  printf '├%s%s%s┤\n' "$(repeat_char '─' "$left")" "$core" "$(repeat_char '─' "$right")"
+}
+
+box_footer() {
+  local label="$1" width="$2"
+  local core="┤${label}├"
+  local fill left right
+  fill=$((width - $(visible_width "$core")))
+  left=$((fill / 2))
+  right=$((fill - left))
+  printf '└%s%s%s┘\n' "$(repeat_char '─' "$left")" "$core" "$(repeat_char '─' "$right")"
+}
+
+reset_rt_cache() {
+  rm -f "$HOME/.cache/silo-rt/torrents.json" "$HOME/.cache/silo-rt/torrents.meta.json"
+  timeout 15s "$RT_CACHE_PYTHON" "$RT_CACHE_DAEMON" --once >/dev/null 2>&1 || true
+}
+
 print_dashboard() {
   local ts="$1"
-  local checking="$2"
-  local error="$3"
-  local trk_warn="$4"
-  local trk_breakdown="$5"
-  local down="$6"
-  local stalled_dl="$7"
-  local seeding_up="$8"
-  local stalled_up="$9"
-  local uploading="${10}"
-  local stopped_up="${11}"
-  local stopped_dl="${12}"
-  local total="${13}"
-  local interval_s="${14}"
+  local transport_label="$2"
+  local transport_detail="$3"
+  local cache_age_s="$4"
+  local active_leases="$5"
+  local checking="$6"
+  local error="$7"
+  local trk_warn="$8"
+  local trk_breakdown="$9"
+  local down="${10}"
+  local stalled_dl="${11}"
+  local stalled_up="${12}"
+  local uploading="${13}"
+  local stopped_up="${14}"
+  local stopped_dl="${15}"
+  local total="${16}"
+  local cache_dot cache_age_color transport_extra ts_short title footer_label
+  local cache_line1 cache_line2
+  local attn_total dl_total ul_total
+  local -a lines=() bars=()
+  local width=0 vis
+  cache_dot="${GREEN}●${R}"
+  [[ "$transport_detail" == *stale* ]] && cache_dot="${YELLOW}●${R}"
+  [[ "$transport_detail" == *dmn↓* || "$transport_detail" == *missing* ]] && cache_dot="${RED}●${R}"
+  cache_age_color="$(cache_age_sev "$cache_age_s")"
+  transport_extra="$(cache_status_text "${transport_detail:-fresh}" "${cache_age_s:-0}")"
+  ts_short="$(date -d "$ts" '+%m-%d-%y %H:%M' 2>/dev/null || printf '%s' "$ts")"
+  attn_total=$((checking + error))
+  dl_total=$((down + stalled_dl + stopped_dl))
+  ul_total=$((uploading + stalled_up + stopped_up))
+  title="rTorrent v${SCRIPT_VERSION}"
+  if [[ "$transport_label" == "direct" ]]; then
+    cache_line1="Direct: ${cache_dot} $(color_num "${INTERVAL_S}s" info) ${DIM}·${R} xmlrpc"
+    cache_line2="live"
+  else
+    cache_line1="Cache: ${cache_dot} $(color_num "${INTERVAL_S}s" info) ${DIM}·${R} ttl$(color_num "${RT_CACHE_MAX_AGE}s" info)"
+    cache_line2="$(color_num "$transport_extra" "$cache_age_color")"
+  fi
 
-  local sep="────────────────────────"
-
-  printf '── rTorrent v%s ──\n' "$SCRIPT_VERSION"
-  printf '%s\n' "$ts"
-  printf '%s\n' "$sep"
-  printf '%-12s : %5s\n' "checking"    "$checking"
-  printf '%-12s : %5s\n' "error"       "$error"
-  printf '%-12s : %5s\n' "downloading" "$down"
-  printf '%-12s : %5s\n' "stalledDL"   "$stalled_dl"
-  printf '%-12s : %5s\n' "seeding(up)" "$seeding_up"
-  printf '%-12s : %5s\n' "stalledUP"   "$stalled_up"
-  printf '%-12s : %5s\n' "uploading"   "$uploading"
-  printf '%-12s : %5s\n' "stoppedUP"   "$stopped_up"
-  printf '%-12s : %5s\n' "stoppedDL"   "$stopped_dl"
-  printf '%s\n' "$sep"
-  printf '%-12s : %5s\n' "total"       "$total"
-  printf '%s\n' "$sep"
-  printf '%-12s : %4ss\n' "interval"   "$interval_s"
+  lines+=("$cache_line1" "$cache_line2")
+  lines+=("$(printf '%-9s' "checking") : $(printf '%5s' "$(color_num "$checking" watch)")")
+  lines+=("$(printf '%-9s' "fatal") : $(printf '%5s' "$(color_num "$error" bad)")")
+  lines+=("$(printf '%-9s' "active") : $(printf '%5s' "$(color_num "$down" good)")")
+  lines+=("$(printf '%-9s' "stalled") : $(printf '%5s' "$(color_num "$stalled_dl" watch)")")
+  lines+=("$(printf '%-9s' "stopped") : $(printf '%5s' "$(color_num "$stopped_dl" dim)")")
+  lines+=("$(printf '%-9s' "active") : $(printf '%5s' "$(color_num "$uploading" good)")")
+  lines+=("$(printf '%-9s' "idle") : $(printf '%5s' "$(color_num "$stalled_up" good)")")
+  lines+=("$(printf '%-9s' "stopped") : $(printf '%5s' "$(color_num "$stopped_up" dim)")")
+  bars+=("Attention:$(color_num "$attn_total" warn)")
+  bars+=("DL:$(color_num "$dl_total" $([[ "$dl_total" -gt 0 ]] && echo watch || echo dim))")
+  bars+=("UL:$(color_num "$ul_total" good)")
   if [[ "$trk_warn" -gt 0 ]] 2>/dev/null; then
-    printf '%s\n' "$sep"
-    printf '%-12s : %5s\n' "trk_warn"  "$trk_warn"
+    bars+=("trk_warn:$(color_num "$trk_warn" warn)")
     if [[ -n "$trk_breakdown" ]]; then
       while IFS=$'\t' read -r cat cnt; do
         [[ -z "$cat" ]] && continue
-        printf '  %-10s : %5s\n' "$cat" "$cnt"
+        lines+=("$(printf '%-9s' "$cat") : $(printf '%5s' "$(color_num "$cnt" $([[ "$cat" == auth_err || "$cat" == deleted ]] && echo bad || echo watch))")")
       done <<<"$trk_breakdown"
     fi
   fi
+  bars+=("total:$(color_num "$total" info)")
+
+  for line in "$title" "${lines[@]}" "${bars[@]}" "$ts_short"; do
+    vis="$(visible_width "$line")"
+    (( vis > width )) && width="$vis"
+  done
+  if [[ "$SHOW_HELP" -eq 1 ]]; then
+    vis="$(visible_width 'q quit  c cache  d direct  r reset  +/- interval  ? help')"
+    (( vis > width )) && width="$vis"
+  fi
+
+  box_top "$title" "$width"
+  box_line "$cache_line1" "$width"
+  box_line "$cache_line2" "$width"
+  box_bar "${bars[0]}" "$width"
+  box_line "${lines[2]}" "$width"
+  box_line "${lines[3]}" "$width"
+  box_bar "${bars[1]}" "$width"
+  box_line "${lines[4]}" "$width"
+  box_line "${lines[5]}" "$width"
+  box_line "${lines[6]}" "$width"
+  box_bar "${bars[2]}" "$width"
+  box_line "${lines[7]}" "$width"
+  box_line "${lines[8]}" "$width"
+  box_line "${lines[9]}" "$width"
+  if [[ "$trk_warn" -gt 0 ]] 2>/dev/null; then
+    box_bar "${bars[3]}" "$width"
+    local idx
+    for ((idx = 10; idx < ${#lines[@]}; idx++)); do
+      box_line "${lines[$idx]}" "$width"
+    done
+    box_bar "${bars[4]}" "$width"
+  else
+    box_bar "${bars[3]}" "$width"
+  fi
+  footer_label="$ts_short"
+  [[ "$SHOW_HELP" -eq 1 ]] && footer_label='q quit  c cache  d direct  r reset  +/- interval  ? help'
+  box_footer "$footer_label" "$width"
 }
 
 _FORCE_REDRAW=0
 _on_winch() { _FORCE_REDRAW=1; }
 [[ "$DASHBOARD" -eq 1 ]] && trap '_on_winch' SIGWINCH
+
+handle_dashboard_key() {
+  local key="$1"
+  case "$key" in
+    q) exit 0 ;;
+    c) DIRECT_MODE=0; _FORCE_REDRAW=1 ;;
+    d) DIRECT_MODE=1; _FORCE_REDRAW=1 ;;
+    r) reset_rt_cache; DIRECT_MODE=0; _FORCE_REDRAW=1 ;;
+    '+') ((INTERVAL_S > 1)) && INTERVAL_S=$((INTERVAL_S - 1)); _FORCE_REDRAW=1 ;;
+    '-') INTERVAL_S=$((INTERVAL_S + 1)); _FORCE_REDRAW=1 ;;
+    '?') SHOW_HELP=$((1 - SHOW_HELP)); _FORCE_REDRAW=1 ;;
+  esac
+}
+
+dashboard_pause() {
+  local deadline key
+  deadline=$((SECONDS + INTERVAL_S))
+  while (( SECONDS < deadline )); do
+    if read -rsn1 -t 0.2 key; then
+      handle_dashboard_key "$key"
+      return 0
+    fi
+  done
+}
 
 iteration=0
 
@@ -311,6 +502,8 @@ while true; do
       TORRENTS_JSON="$_raw"
       RT_TRANSPORT_LABEL="direct"
       RT_TRANSPORT_DETAIL="xmlrpc"
+      RT_CACHE_AGE_S=""
+      RT_ACTIVE_LEASES="0"
       read -r CHECKING ERROR DOWN STALLED_DL SEEDING_UP STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
         [
           ([.[] | select(.state == "checking")]                             | length),
@@ -361,17 +554,19 @@ while true; do
     else
       RT_TRANSPORT_LABEL="cache"
       RT_TRANSPORT_DETAIL="$(jq -r '
-        ((.cache_age_s // "?") | tostring | split(".")[0]) + "s" +
-        (if .freshness != "fresh" then "·" + (.freshness // "?") else "" end) +
+        (if .freshness != "fresh" then (.freshness // "?") else "" end) +
         (if .daemon_running == false then "·dmn↓" else "" end)
       ' <<<"$SUMMARY_JSON")"
+      RT_TRANSPORT_DETAIL="${RT_TRANSPORT_DETAIL#·}"
+      RT_CACHE_AGE_S="$(jq -r 'if .cache_age_s == null then "" else ((.cache_age_s | tonumber) * 10 | floor / 10 | tostring) end' <<<"$SUMMARY_JSON")"
+      RT_ACTIVE_LEASES="$(jq -r '.active_leases // 0' <<<"$SUMMARY_JSON")"
       if [[ "$(jq -r '.ok' <<<"$SUMMARY_JSON")" != "true" ]]; then
         FETCH_ERROR="$(jq -r '.last_error // .status_error // "cache_missing"' <<<"$SUMMARY_JSON")"
       else
-        read -r CHECKING ERROR DOWN STALLED_DL STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
+        read -r CHECKING ERROR DOWN STALLED_DL STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TRACKER_WARN TOP_STATES <<<"$(jq -r '
           [
             ((.states.checkingDL // 0) + (.states.checkingUP // 0) + (.states.checking // 0)),
-            (.states.error_fatal // 0),
+            (.error_fatal // .states.error_fatal // .states.error // 0),
             (.states.downloading // 0),
             (.states.stalledDL // 0),
             (.states.stalledUP // 0),
@@ -379,15 +574,17 @@ while true; do
             (.states.stoppedUP // 0),
             (.states.stoppedDL // 0),
             (.items // 0),
+            (.tracker_warn_total // 0),
             ((.top_states // []) | join(","))
           ] | @tsv
         ' <<<"$SUMMARY_JSON")"
-        # .states.error = old pre-split bucket = all d.message items = tracker warns (seeding)
-        # Add them into seeding counts until silo splits the bucket
-        TRACKER_WARN="$(jq -r '.states.error // 0' <<<"$SUMMARY_JSON")"
-        TRACKER_WARN_BREAKDOWN=""
-        SEEDING_UP=$((STALLED_UP + UPLOADING + TRACKER_WARN))
-        STALLED_UP=$((STALLED_UP + TRACKER_WARN))
+        TRACKER_WARN_BREAKDOWN="$(jq -r '
+          (.tracker_warn_by_kind // {})
+          | to_entries
+          | sort_by(-.value)[]
+          | "\(.key)\t\(.value)"
+        ' <<<"$SUMMARY_JSON" 2>/dev/null)" || true
+        SEEDING_UP=$((STALLED_UP + UPLOADING))
       fi
     fi
   fi
@@ -421,11 +618,10 @@ while true; do
     _FORCE_REDRAW=0
     print_dashboard \
       "$(date '+%F %T')" \
+      "$RT_TRANSPORT_LABEL" "$RT_TRANSPORT_DETAIL" "$RT_CACHE_AGE_S" "$RT_ACTIVE_LEASES" \
       "$CHECKING" "$ERROR" "$TRACKER_WARN" "$TRACKER_WARN_BREAKDOWN" \
-      "$DOWN" "$STALLED_DL" \
-      "$SEEDING_UP" "$STALLED_UP" "$UPLOADING" \
-      "$STOPPED_UP" "$STOPPED_DL" \
-      "$TOTAL" "$INTERVAL_S"
+      "$DOWN" "$STALLED_DL" "$STALLED_UP" "$UPLOADING" \
+      "$STOPPED_UP" "$STOPPED_DL" "$TOTAL"
   else
     printf '%s transport=%s detail=%q checking=%s error=%s trk_warn=%s downloading=%s stalledDL=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s stoppedDL=%s total=%s top=%s\n' \
       "$(date '+%F %T')" \
@@ -447,8 +643,12 @@ while true; do
     exit 0
   fi
 
-  sleep "$INTERVAL_S" &
-  _SLEEP_PID=$!
-  wait "$_SLEEP_PID" 2>/dev/null || true
-  kill "$_SLEEP_PID" 2>/dev/null || true
+  if [[ "$DASHBOARD" -eq 1 ]]; then
+    dashboard_pause
+  else
+    sleep "$INTERVAL_S" &
+    _SLEEP_PID=$!
+    wait "$_SLEEP_PID" 2>/dev/null || true
+    kill "$_SLEEP_PID" 2>/dev/null || true
+  fi
 done
