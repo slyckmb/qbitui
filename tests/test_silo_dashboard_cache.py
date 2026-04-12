@@ -91,3 +91,55 @@ def test_fetch_torrents_info_payload_uses_direct_mode_only_when_explicit(monkeyp
     assert used_cache is False
     assert used_direct is True
     assert error is None
+
+
+def test_build_rows_falls_back_to_tracker_hostname_when_registry_is_empty():
+    rows = qbit_dashboard.build_rows(
+        [
+            {
+                "name": "example",
+                "state": "stoppedDL",
+                "progress": 0.5,
+                "size": 1024,
+                "tracker": "https://trackerprxy.digitalcore.club/announce/token",
+                "hash": "abc123",
+            }
+        ],
+        {},
+        {},
+    )
+
+    assert rows[0]["tracker"] == "trackerprxy.digitalcore.club"
+
+
+def test_build_rows_prefers_registry_match_over_hostname_fallback():
+    rows = qbit_dashboard.build_rows(
+        [
+            {
+                "name": "example",
+                "state": "stoppedDL",
+                "progress": 0.5,
+                "size": 1024,
+                "tracker": "https://tracker.example/announce/token",
+                "hash": "abc123",
+            }
+        ],
+        {},
+        {r"tracker\\.example": "ExampleTracker"},
+    )
+
+    assert rows[0]["tracker"] == "ExampleTracker"
+
+
+def test_find_tracker_registry_resolves_sibling_traktor_from_worktree(monkeypatch, tmp_path):
+    silo_root = tmp_path / "tools" / "silo"
+    worktree_bin = silo_root / ".agent" / "worktrees" / "chat-123" / "bin"
+    worktree_bin.mkdir(parents=True)
+    registry = tmp_path / "tools" / "traktor" / "config" / "tracker-registry.yml"
+    registry.parent.mkdir(parents=True)
+    registry.write_text("trackers: {}\n", encoding="utf-8")
+
+    monkeypatch.delenv("QBIT_TRACKER_REGISTRY_FILE", raising=False)
+    monkeypatch.setattr(qbit_dashboard, "__file__", str(worktree_bin / "silo-dashboard.py"))
+
+    assert qbit_dashboard._find_tracker_registry() == registry
