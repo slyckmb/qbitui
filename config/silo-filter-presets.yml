@@ -17,7 +17,7 @@ slots:
   '9':
   - type: status
     values:
-    - su
+    - pu
     enabled: true
     negate: true
   '3':
