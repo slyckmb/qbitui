@@ -325,6 +325,11 @@ def agent_main(argv: Optional[List[str]] = None) -> int:
         if not started:
             print("qb-cache-agent: failed to ensure daemon is running", file=sys.stderr)
 
+    # max_age <= 0 means "ensure daemon only" — caller doesn't want data, just daemon health.
+    # Exit immediately rather than spinning in a wait loop that can never be satisfied.
+    if args.max_age <= 0:
+        return 0
+
     def _load_cache_and_meta() -> Tuple[str, dict, Optional[float]]:
         meta = _read_json(meta_file)
         age = _cache_age_seconds(meta, time.time())
