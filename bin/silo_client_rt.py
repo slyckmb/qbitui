@@ -31,7 +31,7 @@ except Exception:
 
 NAME    = "rTorrent"
 KEY     = "rtorrent"   # key used in active_client comparisons
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 
 # ── Module-level tracker cache ───────────────────────────────────────────────
 # Populated by _fetch_tracker_batch() inside fetch(); persists across daemon
@@ -69,7 +69,7 @@ _MULTICALL_FIELDS = [
     "d.message=",        # [9]  tracker/error message
     "d.custom1=",        # [10] ruTorrent label → used as category
     "d.peers_accounted=",# [11] total peer count
-    "d.creation_date=",  # [12] unix timestamp torrent was added
+    "d.timestamp.load=", # [12] unix timestamp torrent was added to client
     "d.directory=",      # [13] save directory (multi-file: already includes torrent name)
     "d.hashing=",        # [14] 0=not hashing, 1=hash-checking (d.check_hash in progress)
     # NOTE: d.base_path= and d.tracker_domain= are NOT available on this rTorrent build.
@@ -89,7 +89,7 @@ _F_ACTIVE    = 8
 _F_MESSAGE   = 9
 _F_CUSTOM1   = 10
 _F_PEERS     = 11
-_F_CREATED   = 12
+_F_LOADED    = 12
 _F_DIRECTORY = 13
 _F_HASHING   = 14
 
@@ -386,7 +386,10 @@ def _process_results(
             message     = str(item[_F_MESSAGE] or "")
             label       = str(item[_F_CUSTOM1] or "")
             peers       = int(item[_F_PEERS])     or 0
-            created     = item[_F_CREATED]
+            
+            # Primary Date Added: d.timestamp.load
+            created     = int(item[_F_LOADED]) if item[_F_LOADED] else 0
+                
             directory   = str(item[_F_DIRECTORY] or "")
             hashing     = int(item[_F_HASHING]) if len(item) > _F_HASHING else 0
             base_path   = _compute_base_path(directory, name)

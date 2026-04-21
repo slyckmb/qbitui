@@ -60,7 +60,7 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.5.4"
+VERSION = "2.5.5"
 LAST_UPDATED = "2026-03-28"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -3834,9 +3834,9 @@ def main() -> int:
                     cache_time = now
 
             # ── rTorrent fetch (cache-first, direct XMLRPC fallback) ──────────
-            if active_client == "rtorrent" and _RT_AVAILABLE and rt_url:
+            if active_client == "rtorrent" and _RT_AVAILABLE:
                 # Ensure the cache daemon is running (fire-and-forget ping)
-                if _CC_AVAILABLE and _rt_daemon_script.exists():
+                if _CC_AVAILABLE and _rt_daemon_script.exists() and rt_url:
                     if (now - _rt_last_daemon_ping) >= _rt_daemon_ping_interval:
                         _cc.ensure_daemon(
                             daemon_script=_rt_daemon_script,
@@ -3893,7 +3893,7 @@ def main() -> int:
                 # the cache is the source of truth; silently polling RT on
                 # stale cache makes overload conditions worse.
                 _daemon_mode = _CC_AVAILABLE and _rt_daemon_script.exists()
-                if not _loaded_from_cache and (args.rt_direct or not _daemon_mode):
+                if not _loaded_from_cache and (args.rt_direct or not _daemon_mode) and rt_url:
                     if not rt_cached_rows or (now - rt_cache_time) >= rt_fetch_interval:
                         try:
                             _rt_rows = _rt_client.fetch(rt_url)
@@ -3908,6 +3908,11 @@ def main() -> int:
                 elif not _loaded_from_cache and _daemon_mode and not rt_cached_rows:
                     # Daemon mode, cache not yet populated — show empty until daemon primes
                     pass
+                
+                # If we have rows but no torrents (e.g. read from cache file in a previous loop), 
+                # ensure cached_torrents is populated for header stats
+                if rt_cached_rows and not rt_cached_torrents:
+                    rt_cached_torrents = [r.get("raw", {}) for r in rt_cached_rows]
 
             # ── SABnzbd fetch ─────────────────────────────────────────────────
             if active_client == "sabnzbd" and _SAB_AVAILABLE and _sab_conn:
@@ -4914,24 +4919,34 @@ def main() -> int:
                 # '\': cycle active client (qBit → rTorrent → SABnzbd → qBit)
                 if key == "\\":
                     if active_client == "qbit":
-                        if _RT_AVAILABLE and rt_url:
+                        if _RT_AVAILABLE: # Allow switching to RT if module is present
                             active_client = "rtorrent"
                             rt_cached_rows = []
+                            rt_cached_torrents = []
                             rt_cache_time = 0.0
-                            set_banner(f"Switched to rTorrent  ({rt_url})")
-                        elif _SAB_AVAILABLE and _sab_api_key:
+                            if not rt_url:
+                                set_banner(f"Switched to rTorrent (CONFIG MISSING)", duration=4.0)
+                            else:
+                                set_banner(f"Switched to rTorrent  ({rt_url})")
+                        elif _SAB_AVAILABLE:
                             active_client = "sabnzbd"
                             sab_cached_rows = []
                             sab_cache_time = 0.0
-                            set_banner(f"Switched to SABnzbd  ({_sab_conn.api_url if _sab_conn else _sab_url})")
+                            if not (_sab_conn or _sab_url):
+                                set_banner(f"Switched to SABnzbd (CONFIG MISSING)", duration=4.0)
+                            else:
+                                set_banner(f"Switched to SABnzbd  ({_sab_conn.api_url if _sab_conn else _sab_url})")
                         else:
-                            set_banner("No other clients configured — set rtorrent.xmlrpc_url or sabnzbd in silo.yml")
+                            set_banner("No other clients available")
                     elif active_client == "rtorrent":
-                        if _SAB_AVAILABLE and _sab_api_key:
+                        if _SAB_AVAILABLE:
                             active_client = "sabnzbd"
                             sab_cached_rows = []
                             sab_cache_time = 0.0
-                            set_banner(f"Switched to SABnzbd  ({_sab_conn.api_url if _sab_conn else _sab_url})")
+                            if not (_sab_conn or _sab_url):
+                                set_banner(f"Switched to SABnzbd (CONFIG MISSING)", duration=4.0)
+                            else:
+                                set_banner(f"Switched to SABnzbd  ({_sab_conn.api_url if _sab_conn else _sab_url})")
                         else:
                             active_client = "qbit"
                             set_banner("Switched to qBittorrent")
