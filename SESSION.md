@@ -1,15 +1,15 @@
 ---
 chat_id: silo-20260422-054758-claude
-status: completed
-phase: complete
+status: active
+phase: execute
 model_tier: standard
 agent: claude
-goal: "Implement flexible rTorrent daemon discovery + fix daemon cache population issues"
-current_step: "all work complete; clean worktree"
+goal: "Implement flexible rTorrent daemon discovery + fix daemon cache population issues; migrate qB cache from hashall to silo with history preservation and discovery hardening"
+current_step: "Phase 2: qB cache migration — documented, beginning execution"
 files_changed: 5
 commits: 5
 created_at: 2026-04-22 05:47:58
-updated_at: 2026-04-22 12:45:00
+updated_at: 2026-04-22 11:13:00
 ---
 
 ## Session Summary
@@ -98,12 +98,27 @@ Created `docs/DAEMON_DISCOVERY.md` with:
    - ✅ Verified: 5263 torrents show correct individual dates
    - Daemon cache now fully operational
 
-### Next Steps
-1. Update README with daemon discovery feature note
-2. Check for existing daemon issues (inspect cache files, logs)
-3. Test daemon startup/recovery
-4. Document any issues found
-5. Final commit for clean worktree
+### Phase 1 Completed — Next Phase
+
+**Phase 2: qB Cache Migration from hashall → silo**
+
+Plan documented at `docs/QB_CACHE_MIGRATION.md`. Steps:
+0. Import hashall git history (git filter-repo + merge)
+1. Adapt `bin/qb_cache_lib.py` (stdlib-only, no hashall dep)
+2. Replace `bin/silo-cache-agent.py` (shim → real)
+3. Replace `bin/silo-cache-daemon.py` (shim → real)
+4. Update `bin/silo-dashboard.py` line 31 (import constant rename)
+5. Delete 3 dead files (`silo_hashall_shared.py`, deprecated qbit-* scripts)
+6. Port RT cache hardening: generalize `discover_daemon_script()` for qB
+
+Key context to survive compaction:
+- Cache dir stays `~/.cache/hashall-qb` (hashall reads from here)
+- Zombie fix: `if args.max_age <= 0: return 0` must be in qb_cache_lib.py ~line 328
+- Dashboard line 31: alias `DEFAULT_QB_CACHE_BASE as DEFAULT_HASHALL_CACHE_BASE`
+- History import (Step 0) MUST precede adaptation edits (Step 1)
+- qB env var: `SILO_QB_DAEMON_SCRIPT` (RT uses `SILO_RT_DAEMON_SCRIPT`)
+- Validation marker for qB daemon: string `silo-cache-daemon` in first 500 chars
+- Do NOT touch hashall repo in this session
 
 ---
 
