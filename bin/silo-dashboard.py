@@ -3131,7 +3131,9 @@ def main() -> int:
     _rt_daemon_script = None
     if _CC_AVAILABLE:
         _rt_daemon_script = _cc.discover_daemon_script(
-            default_relative=Path(__file__).parent / "silo-rt-cache-daemon.py"
+            default_relative=Path(__file__).parent / "silo-rt-cache-daemon.py",
+            daemon_name="silo-rt-cache-daemon",
+            env_var="SILO_RT_DAEMON_SCRIPT",
         )
     _rt_cache_max_age = max(rt_fetch_interval * 3, 30.0)  # stale threshold scales with interval
     _rt_daemon_ping_interval = 15.0   # how often to re-ping ensure_daemon

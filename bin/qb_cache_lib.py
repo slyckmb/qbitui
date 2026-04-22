@@ -24,6 +24,21 @@ __version__ = "1.0.0"
 
 DEFAULT_QB_CACHE_BASE = Path.home() / ".cache" / "hashall-qb"  # keep same dir; shared with hashall readers
 
+# Resolve qB daemon path at import time via silo_cache_common discovery chain.
+# Falls back gracefully if silo_cache_common is not importable (standalone use).
+_bin_dir = Path(__file__).resolve().parent
+try:
+    sys.path.insert(0, str(_bin_dir))
+    from silo_cache_common import discover_daemon_script as _discover_daemon_script
+    _discovered_qb_daemon = _discover_daemon_script(
+        default_relative=_bin_dir / "silo-cache-daemon.py",
+        daemon_name="silo-cache-daemon",
+        env_var="SILO_QB_DAEMON_SCRIPT",
+    )
+except Exception:
+    _discovered_qb_daemon = None
+_QB_DAEMON_DEFAULT = str(_discovered_qb_daemon or (_bin_dir / "silo-cache-daemon.py"))
+
 
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
@@ -255,7 +270,7 @@ def build_agent_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lock-file", default=str(base_dir / "daemon.lock"))
     parser.add_argument(
         "--daemon-cmd",
-        default=str(Path(__file__).resolve().parent / "silo-cache-daemon.py"),
+        default=_QB_DAEMON_DEFAULT,
     )
     parser.add_argument("--daemon-log-file", default=str(base_dir / "daemon.log"))
     parser.add_argument("--client-id", default="")
