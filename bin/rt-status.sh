@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Version: 1.3.2
-# rt-watch.sh — rTorrent state dashboard
+# Version: 1.3.3
+# rt-status.sh — rTorrent state dashboard
 #
 # Reads rTorrent state from the shared silo cache by default.
 # Direct XMLRPC access is available only via --direct for one-off diagnostics.
 set -euo pipefail
 
-SCRIPT_VERSION="1.3.2"
+SCRIPT_VERSION="1.3.3"
 RT_CONTAINER="${RT_CONTAINER:-rtorrent_vpn}"
 RT_RPC_URL="${RT_RPC_URL:-http://localhost:8000/}"
 RT_CACHE_SUMMARY="${RT_CACHE_SUMMARY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rt-cache-summary.py}"
-RT_CACHE_DAEMON="${RT_CACHE_DAEMON:-/home/michael/dev/tools/silo/bin/silo-rt-cache-daemon.py}"
+RT_CACHE_DAEMON="${RT_CACHE_DAEMON:-${SILO_RT_DAEMON_SCRIPT:-/home/michael/dev/tools/silo/bin/silo-rt-cache-daemon.py}}"
 RT_CACHE_PYTHON="${RT_CACHE_PYTHON:-python3}"
 RT_CACHE_MAX_AGE="${RT_CACHE_MAX_AGE:-60}"
 INTERVAL_S=30

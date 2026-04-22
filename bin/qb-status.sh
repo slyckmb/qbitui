@@ -154,7 +154,7 @@ resolve_cache_python() {
     return
   fi
 
-  local agent_realpath="" agent_dir="" repo_root="" hashall_root=""
+  local agent_realpath="" agent_dir="" repo_root=""
   agent_realpath="$(readlink -f "$CACHE_AGENT" 2>/dev/null || printf '%s' "$CACHE_AGENT")"
   agent_dir="$(cd "$(dirname "$agent_realpath")" && pwd)"
   repo_root="$(cd "$agent_dir/.." && pwd)"
@@ -162,15 +162,6 @@ resolve_cache_python() {
   if resolve_venv_python "$repo_root" >/dev/null 2>&1; then
     resolve_venv_python "$repo_root"
     return
-  fi
-
-  # `silo` exposes thin wrapper scripts that exec the canonical hashall tools.
-  if [[ -f "$agent_dir/silo_hashall_shared.py" ]]; then
-    hashall_root="${HASHALL_ROOT:-/home/michael/dev/work/hashall}"
-    if resolve_venv_python "$hashall_root" >/dev/null 2>&1; then
-      resolve_venv_python "$hashall_root"
-      return
-    fi
   fi
 
   command -v python3
