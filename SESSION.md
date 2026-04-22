@@ -1,15 +1,15 @@
 ---
 chat_id: silo-20260422-054758-claude
-status: active
-phase: execute
+status: completed
+phase: complete
 model_tier: standard
 agent: claude
 goal: "Implement flexible rTorrent daemon discovery + fix daemon cache population issues; migrate qB cache from hashall to silo with history preservation and discovery hardening"
-current_step: "Phase 2: qB cache migration — documented, beginning execution"
-files_changed: 5
-commits: 5
+current_step: "all work complete; clean worktree"
+files_changed: 11
+commits: 11
 created_at: 2026-04-22 05:47:58
-updated_at: 2026-04-22 11:13:00
+updated_at: 2026-04-22 16:41:00
 ---
 
 ## Session Summary
@@ -98,27 +98,36 @@ Created `docs/DAEMON_DISCOVERY.md` with:
    - ✅ Verified: 5263 torrents show correct individual dates
    - Daemon cache now fully operational
 
-### Phase 1 Completed — Next Phase
+### Phase 2: qB Cache Migration — ALL COMPLETED ✅
 
-**Phase 2: qB Cache Migration from hashall → silo**
+#### Git History Import ✅
+- `git filter-repo` on hashall clone (--no-local) with path remapping
+- `src/hashall/qb_cache.py` → `bin/qb_cache_lib.py`
+- `bin/qb-cache-{agent,daemon}.py` → `bin/silo-cache-{agent,daemon}.py`
+- Pre-rename `qbit-cache-*.py` paths included for full 7-commit ancestry
+- Merged as unrelated histories via `git merge --allow-unrelated-histories`
 
-Plan documented at `docs/QB_CACHE_MIGRATION.md`. Steps:
-0. Import hashall git history (git filter-repo + merge)
-1. Adapt `bin/qb_cache_lib.py` (stdlib-only, no hashall dep)
-2. Replace `bin/silo-cache-agent.py` (shim → real)
-3. Replace `bin/silo-cache-daemon.py` (shim → real)
-4. Update `bin/silo-dashboard.py` line 31 (import constant rename)
-5. Delete 3 dead files (`silo_hashall_shared.py`, deprecated qbit-* scripts)
-6. Port RT cache hardening: generalize `discover_daemon_script()` for qB
+#### Migration Steps 1–5 ✅
+- `bin/qb_cache_lib.py`: hashall import removed; stdlib-only qB client;
+  `DEFAULT_QB_CACHE_BASE` constant; `--daemon-cmd` default fixed; `__version__ = "1.0.0"`
+- `bin/silo-cache-agent.py`: shim → native (imports `agent_main` from `qb_cache_lib`)
+- `bin/silo-cache-daemon.py`: shim → native (imports `daemon_main` from `qb_cache_lib`)
+- `bin/silo-dashboard.py` line 31: `from qb_cache_lib import DEFAULT_QB_CACHE_BASE as DEFAULT_HASHALL_CACHE_BASE`
+- Deleted: `bin/silo_hashall_shared.py`, `bin/qbit-cache-agent.py`, `bin/qbit-cache-daemon.py`
 
-Key context to survive compaction:
-- Cache dir stays `~/.cache/hashall-qb` (hashall reads from here)
-- Zombie fix: `if args.max_age <= 0: return 0` must be in qb_cache_lib.py ~line 328
-- Dashboard line 31: alias `DEFAULT_QB_CACHE_BASE as DEFAULT_HASHALL_CACHE_BASE`
-- History import (Step 0) MUST precede adaptation edits (Step 1)
-- qB env var: `SILO_QB_DAEMON_SCRIPT` (RT uses `SILO_RT_DAEMON_SCRIPT`)
-- Validation marker for qB daemon: string `silo-cache-daemon` in first 500 chars
-- Do NOT touch hashall repo in this session
+#### Discovery Hardening Step 6 ✅
+- `silo_cache_common.py`: `_validate_daemon_script`, `_find_running_daemon`,
+  `discover_daemon_script` generalized with `daemon_name` + `env_var` params
+- `qb_cache_lib.py`: module-level discovery wired into `--daemon-cmd` default
+- `silo-dashboard.py`: RT call site updated with explicit `daemon_name`/`env_var`
+- Env vars: `SILO_RT_DAEMON_SCRIPT` (RT), `SILO_QB_DAEMON_SCRIPT` (qB)
+
+#### Verification ✅
+- `silo-cache-daemon.py --once`: 5253 torrents, source=daemon_live, 15M cache
+- `silo-cache-agent.py --max-age 60`: 5253 torrents from cache
+- All syntax checks pass (5 files)
+- Discovery: RT → `/home/michael/dev/tools/silo/bin/silo-rt-cache-daemon.py`
+- Discovery: qB → worktree `bin/silo-cache-daemon.py`
 
 ---
 
