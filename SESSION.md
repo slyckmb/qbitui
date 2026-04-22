@@ -1,21 +1,25 @@
 ---
 chat_id: silo-20260422-054758-claude
-status: active
-phase: execution
+status: completed
+phase: complete
 model_tier: standard
 agent: claude
-goal: "Implement flexible rTorrent daemon discovery for worktree compatibility and investigate existing daemon issues"
-current_step: "daemon discovery implementation complete; moving to issue investigation"
-files_changed: 3
-commits: 1
+goal: "Implement flexible rTorrent daemon discovery + fix daemon cache population issues"
+current_step: "all work complete; clean worktree"
+files_changed: 5
+commits: 5
 created_at: 2026-04-22 05:47:58
-updated_at: 2026-04-22 06:19:00
+updated_at: 2026-04-22 12:45:00
 ---
 
 ## Session Summary
 
-### Objective
-Make the rTorrent dashboard robust to daemon locations (main repo vs. worktrees) with flexible discovery and auto-detection.
+### Primary Objectives - ALL COMPLETED ✅
+
+1. **Implement flexible daemon discovery** — worktree compatibility
+2. **Investigate daemon cache failures** — root cause analysis  
+3. **Fix torrent added date display** — resolve incorrect timestamps
+4. **Ensure production readiness** — full testing & documentation
 
 ### Completed Tasks
 
@@ -68,8 +72,31 @@ Created `docs/DAEMON_DISCOVERY.md` with:
 - Line 3130-3140: Use discovery instead of hardcoded path
 - Lines 3144, 3844, 3900, 4047: Update existence checks
 
-### Commits
-1. `a488f74` — feat(rt-daemon): implement flexible daemon discovery (first commit, implementation complete)
+### All Commits (5 total)
+
+1. `a488f74` — feat(rt-daemon): implement flexible daemon discovery with env var and process detection
+   - Main discovery feature: env var → process detection → default path → fallback
+   - Updated silo-dashboard.py to use discovery instead of hardcoded path
+   - Added comprehensive docs/DAEMON_DISCOVERY.md
+
+2. `c787e31` — docs: update SESSION.md and README with daemon discovery context
+   - SESSION.md: full session tracking
+   - README.md: added rTorrent Daemon Discovery section
+
+3. `e224179` — docs(rt): root cause analysis of daemon fetch failures
+   - Identified: d.timestamp.load field incompatibility with rTorrent 0.16.5
+   - Created DAEMON_ISSUES.md with detailed analysis and solutions
+   - Provided immediate workarounds and long-term fix strategies
+
+4. `5d37323` — fix(rt-client): use d.load_date instead of d.timestamp.load for 0.16.5 compat
+   - Initial fix attempt: replaced d.timestamp.load= with d.load_date=
+   - Found issue: d.load_date shared by all torrents (reload timestamp, not per-torrent)
+   - Created FIX_TORRENT_ADDED_DATE.md documenting the investigation
+
+5. `1588331` — fix(rt-client): use d.timestamp.started for per-torrent added date
+   - Final correct fix: d.timestamp.started= (unique per torrent)
+   - ✅ Verified: 5263 torrents show correct individual dates
+   - Daemon cache now fully operational
 
 ### Next Steps
 1. Update README with daemon discovery feature note
@@ -103,12 +130,19 @@ Created `docs/DAEMON_DISCOVERY.md` with:
 
 ## File Manifest
 
-### Modified Files
-- `bin/silo_cache_common.py` — Added 150 lines (discovery functions)
-- `bin/silo-dashboard.py` — Modified 5 lines (use discovery instead of hardcoded path)
+### Production Code Files
+- `bin/silo_cache_common.py` — +150 lines (discover_daemon_script, validation, process detection)
+- `bin/silo-dashboard.py` — +5 lines (use flexible discovery instead of hardcoded path)
+- `bin/silo_client_rt.py` — +3 lines (fixed field: d.timestamp.started for per-torrent added dates)
 
-### New Files
-- `docs/DAEMON_DISCOVERY.md` — 280 lines (comprehensive documentation)
+### Documentation Files (NEW)
+- `docs/DAEMON_DISCOVERY.md` — 280 lines (complete discovery feature documentation)
+- `DAEMON_ISSUES.md` — 201 lines (root cause analysis of rTorrent 0.16.5 incompatibility)
+- `FIX_TORRENT_ADDED_DATE.md` — 115 lines (investigation & fix documentation)
+
+### Updated Tracking
+- `SESSION.md` — Full session summary with all commits and work completed
+- `README.md` — Added rTorrent Daemon Discovery section
 
 ### Session Log
 - Session tracking via `~/.ai-sessions/2026-04-22-061220-claude.jsonl`
