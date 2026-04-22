@@ -1,9 +1,8 @@
 """
-Shared qB torrents/info cache tooling for hashall.
+Shared qB torrents/info cache tooling for silo.
 
-This keeps read-heavy qB polling behind one lease-aware cache daemon and uses
-the shared qB compatibility client so older/newer qB variants are normalized in
-one place.
+Lease-aware cache daemon and stdlib-only qB client so silo owns the full
+qB cache implementation without any cross-repo dependency on hashall.
 """
 
 from __future__ import annotations
@@ -21,7 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hashall.qbittorrent import get_qbittorrent_client
+__version__ = "1.0.0"
+
+DEFAULT_QB_CACHE_BASE = Path.home() / ".cache" / "hashall-qb"  # keep same dir; shared with hashall readers
 
 
 def _iso(ts: float) -> str:
@@ -158,14 +159,24 @@ def _fetch_torrents_snapshot(
     username: str,
     password: str,
 ) -> Tuple[str, int, Dict[str, Any], Dict[str, Any]]:
-    client = get_qbittorrent_client(base_url=qbit_url, username=username, password=password)
-    profile = client.get_server_profile(force_refresh=True)
-    torrents = client.get_torrents_payload()
-    tracker_meta: Dict[str, Any] = {"mode": "not_enriched"}
-    enrich = getattr(client, "enrich_torrents_payload_with_trackers", None)
-    if callable(enrich):
-        torrents, tracker_meta = enrich(torrents)
-    return json.dumps(torrents, indent=2), len(torrents), profile.to_dict(), tracker_meta
+    import http.cookiejar
+    import urllib.parse
+    import urllib.request
+
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    data = urllib.parse.urlencode({"username": username, "password": password}).encode()
+    opener.open(f"{qbit_url}/api/v2/auth/login", data, timeout=10)
+
+    def _get(path: str) -> str:
+        return opener.open(f"{qbit_url}/api/v2/{path}", timeout=10).read().decode()
+
+    qb_version = _get("app/version").strip()
+    api_version = _get("app/webapiVersion").strip()
+    qb_profile: Dict[str, Any] = {"client_version": qb_version, "api_version": api_version}
+    raw = _get("torrents/info?sort=name")
+    torrents = json.loads(raw)
+    return json.dumps(torrents, indent=2), len(torrents), qb_profile, {"mode": "not_enriched"}
 
 
 def _ensure_daemon(
@@ -232,7 +243,7 @@ def _ensure_daemon(
 
 
 def build_agent_parser() -> argparse.ArgumentParser:
-    base_dir = Path.home() / ".cache" / "hashall-qb"
+    base_dir = DEFAULT_QB_CACHE_BASE
     parser = argparse.ArgumentParser(
         description="Return qB torrents/info JSON from shared cache, with lease renewal."
     )
@@ -244,7 +255,7 @@ def build_agent_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lock-file", default=str(base_dir / "daemon.lock"))
     parser.add_argument(
         "--daemon-cmd",
-        default=str(Path(__file__).resolve().parents[2] / "bin" / "qb-cache-daemon.py"),
+        default=str(Path(__file__).resolve().parent / "silo-cache-daemon.py"),
     )
     parser.add_argument("--daemon-log-file", default=str(base_dir / "daemon.log"))
     parser.add_argument("--client-id", default="")
@@ -397,7 +408,7 @@ def _cleanup_expired_leases(lease_dir: Path, now: float) -> List[dict]:
 
 
 def build_daemon_parser() -> argparse.ArgumentParser:
-    base_dir = Path.home() / ".cache" / "hashall-qb"
+    base_dir = DEFAULT_QB_CACHE_BASE
     parser = argparse.ArgumentParser(
         description="Run qB torrents/info shared cache daemon with lease-based lifecycle."
     )

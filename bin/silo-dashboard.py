@@ -28,7 +28,7 @@ from pathlib import Path
 from http.cookiejar import CookieJar
 from typing import Optional
 
-from silo_hashall_shared import DEFAULT_HASHALL_CACHE_BASE
+from qb_cache_lib import DEFAULT_QB_CACHE_BASE as DEFAULT_HASHALL_CACHE_BASE
 
 try:
     import yaml  # type: ignore
