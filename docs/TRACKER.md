@@ -9,7 +9,7 @@
 
 | Item | Status |
 |------|--------|
-| RT cache tracker enrichment — real tracker data in cached rows | ✅ DONE |
+| RT cache tracker | ✅ Resolved | enrichment — real tracker data in cached rows | ✅ DONE |
 | Batch tracker fetch via `system.multicall` (500 hashes/req, 300s TTL) | ✅ DONE |
 | Fix `t.scrape_success=` breakage (field absent on this rTorrent build) | ✅ DONE |
 | RT cache header — version strings + hit counters (parity with qBit) | ✅ DONE |
