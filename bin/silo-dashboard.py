@@ -3127,7 +3127,12 @@ def main() -> int:
     _rt_pid_file      = _rt_cache_base / "daemon.pid"
     _rt_lock_file     = _rt_cache_base / "daemon.lock"
     _rt_log_file      = _rt_cache_base / "daemon.log"
-    _rt_daemon_script = Path(__file__).parent / "silo-rt-cache-daemon.py"
+    # Discover daemon script using flexible strategy: env var → running process → default → alternates
+    _rt_daemon_script = None
+    if _CC_AVAILABLE:
+        _rt_daemon_script = _cc.discover_daemon_script(
+            default_relative=Path(__file__).parent / "silo-rt-cache-daemon.py"
+        )
     _rt_cache_max_age = max(rt_fetch_interval * 3, 30.0)  # stale threshold scales with interval
     _rt_daemon_ping_interval = 15.0   # how often to re-ping ensure_daemon
     _rt_last_daemon_ping = 0.0
@@ -3135,7 +3140,7 @@ def main() -> int:
     # Always restart the cache daemon on startup so it picks up any code changes.
     # The last-good cache file is preserved on disk; the brief respawn gap (~3-5s)
     # shows stale data — same behaviour as a normal cache-miss.
-    if _CC_AVAILABLE and _rt_daemon_script.exists():
+    if _CC_AVAILABLE and _rt_daemon_script is not None:
         _cc.stop_daemon(_rt_pid_file)
     _rt_cache_mtime = 0.0             # mtime of last successfully read cache file
 
@@ -3836,7 +3841,7 @@ def main() -> int:
             # ── rTorrent fetch (cache-first, direct XMLRPC fallback) ──────────
             if active_client == "rtorrent" and _RT_AVAILABLE:
                 # Ensure the cache daemon is running (fire-and-forget ping)
-                if _CC_AVAILABLE and _rt_daemon_script.exists() and rt_url:
+                if _CC_AVAILABLE and _rt_daemon_script is not None and rt_url:
                     if (now - _rt_last_daemon_ping) >= _rt_daemon_ping_interval:
                         _cc.ensure_daemon(
                             daemon_script=_rt_daemon_script,
@@ -3892,7 +3897,7 @@ def main() -> int:
                 # --rt-direct was explicitly requested.  In daemon/cache mode
                 # the cache is the source of truth; silently polling RT on
                 # stale cache makes overload conditions worse.
-                _daemon_mode = _CC_AVAILABLE and _rt_daemon_script.exists()
+                _daemon_mode = _CC_AVAILABLE and _rt_daemon_script is not None
                 if not _loaded_from_cache and (args.rt_direct or not _daemon_mode) and rt_url:
                     if not rt_cached_rows or (now - rt_cache_time) >= rt_fetch_interval:
                         try:
@@ -4039,7 +4044,7 @@ def main() -> int:
                 _rt_pid = _rt_meta.get("daemon_pid")
                 _rt_alive = bool(_rt_pid and _cc.daemon_running(_rt_pid_file) if _CC_AVAILABLE else False)
                 cache_info = {
-                    "enabled": _CC_AVAILABLE and _rt_daemon_script.exists(),
+                    "enabled": _CC_AVAILABLE and _rt_daemon_script is not None,
                     "base_path": str(_rt_cache_base),
                     "interval_s": _rt_meta.get("effective_interval_s"),
                     "cache_hits": rt_cache_hit_count,
