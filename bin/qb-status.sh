@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Version: 1.3.3
+# Version: 1.4.0
 set -euo pipefail
 
-SCRIPT_VERSION="1.3.3"
+SCRIPT_VERSION="1.4.0"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QBIT_URL="${QBIT_URL:-http://localhost:9003}"
 QBIT_USER="${QBIT_USER:-${QBITTORRENTAPI_USERNAME:-admin}}"
@@ -10,9 +10,6 @@ QBIT_PASS="${QBIT_PASS:-${QBITTORRENTAPI_PASSWORD:-adminpass}}"
 INTERVAL_S=30
 ONCE=0
 UNTIL_CLEAR=0
-ENFORCE_PAUSED_DL=0
-ALLOW_FILE=""
-EVENTS_JSONL=""
 MAX_ITERATIONS=0
 DASHBOARD=0
 USE_CACHE=1
@@ -21,7 +18,6 @@ CACHE_AGENT="${QBIT_CACHE_AGENT:-${SILO_CACHE_AGENT:-/home/michael/dev/tools/sil
 CACHE_FILE_FALLBACK="${QBIT_CACHE_FALLBACK_FILE:-$HOME/.cache/hashall-qb/torrents-info.json}"
 CACHE_CLIENT_ID="$(basename "$0"):$$"
 CACHE_PYTHON="${QBIT_CACHE_PYTHON:-}"
-declare -a ALLOW_HASHES=()
 
 R=$'\033[0m'
 DIM=$'\033[2m'
@@ -39,17 +35,12 @@ usage() {
 Usage: $(basename "$0") [options]
 
 Watches qB torrent state counts (checking/missing/moving/down/up).
-Optional watchdog mode pauses unexpected downloading torrents and emits alerts.
 Env: QBIT_URL, QBIT_USER, QBIT_PASS
 
 Options:
   --interval N            Poll interval seconds (default: 30)
   --once                  Run one sample then exit
   --until-clear           Exit when checking=0 and moving=0 and down=0
-  --enforce-paused-dl     Pause unexpected downloading/stalledDL torrents
-  --allow-hash HASH       Allowlist hash that watchdog must not auto-pause (repeatable)
-  --allow-file PATH       File with allowlisted hashes (one per line)
-  --events-jsonl PATH     Write watchdog events as JSONL
   --max-iterations N      Exit after N polling iterations (default: 0 = infinite)
   --dashboard             Overwrite-in-place dashboard mode (like watch)
   --cache                 Read qB torrents/info via shared cache agent (default)
@@ -72,22 +63,6 @@ while [[ $# -gt 0 ]]; do
   --until-clear)
     UNTIL_CLEAR=1
     shift
-    ;;
-  --enforce-paused-dl)
-    ENFORCE_PAUSED_DL=1
-    shift
-    ;;
-  --allow-hash)
-    ALLOW_HASHES+=("${2:-}")
-    shift 2
-    ;;
-  --allow-file)
-    ALLOW_FILE="${2:-}"
-    shift 2
-    ;;
-  --events-jsonl)
-    EVENTS_JSONL="${2:-}"
-    shift 2
     ;;
   --max-iterations)
     MAX_ITERATIONS="${2:-}"
@@ -192,31 +167,9 @@ _on_exit() {
   if [[ "$DASHBOARD" -eq 1 ]]; then printf '\n'; fi
 }
 trap '_on_exit' EXIT
-if [[ "$ENFORCE_PAUSED_DL" -eq 1 && -n "$EVENTS_JSONL" ]]; then
-  mkdir -p "$(dirname "$EVENTS_JSONL")"
-fi
-
-declare -A ALLOW_HASH_MAP=()
-for h in "${ALLOW_HASHES[@]}"; do
-  key="$(tr '[:upper:]' '[:lower:]' <<<"${h//[[:space:]]/}")"
-  [[ -n "$key" ]] && ALLOW_HASH_MAP["$key"]=1
-done
-if [[ -n "$ALLOW_FILE" && -f "$ALLOW_FILE" ]]; then
-  while IFS= read -r line; do
-    line="${line%%#*}"
-    key="$(tr '[:upper:]' '[:lower:]' <<<"${line//[[:space:]]/}")"
-    [[ -n "$key" ]] && ALLOW_HASH_MAP["$key"]=1
-  done <"$ALLOW_FILE"
-fi
-
-if [[ "$ENFORCE_PAUSED_DL" -eq 1 && -z "$EVENTS_JSONL" ]]; then
-  stamp="$(TZ=America/New_York date +%Y%m%d-%H%M%S)"
-  EVENTS_JSONL="$HOME/.logs/hashall/reports/rehome-normalize/qb-paused-dl-watchdog-${stamp}.jsonl"
-  mkdir -p "$(dirname "$EVENTS_JSONL")"
-fi
 
 if [[ "$DASHBOARD" -eq 0 ]]; then
-  echo "watchdog_config interval_s=${INTERVAL_S} once=${ONCE} until_clear=${UNTIL_CLEAR} enforce_paused_dl=${ENFORCE_PAUSED_DL} allow_count=${#ALLOW_HASH_MAP[@]} events_jsonl=${EVENTS_JSONL:-none} max_iterations=${MAX_ITERATIONS} cache=${USE_CACHE} cache_max_age=${CACHE_MAX_AGE}"
+  echo "config interval_s=${INTERVAL_S} once=${ONCE} until_clear=${UNTIL_CLEAR} max_iterations=${MAX_ITERATIONS} cache=${USE_CACHE} cache_max_age=${CACHE_MAX_AGE}"
 fi
 
 api_login() {
@@ -224,46 +177,6 @@ api_login() {
     --data-urlencode "username=${QBIT_USER}" \
     --data-urlencode "password=${QBIT_PASS}" \
     "${QBIT_URL}/api/v2/auth/login" >/dev/null
-}
-
-api_post_status() {
-  local endpoint="$1"
-  local hashes="$2"
-  curl -sS -o /dev/null -w "%{http_code}" \
-    -b "$COOKIE_FILE" \
-    --data-urlencode "hashes=${hashes}" \
-    "${QBIT_URL}${endpoint}" || echo "000"
-}
-
-pause_with_fallback() {
-  local hashes="$1"
-  local code=""
-
-  if ! api_login >/dev/null 2>&1; then
-    PAUSE_ACTION_RESULT="pause_failed_login"
-    return 1
-  fi
-
-  code="$(api_post_status "/api/v2/torrents/pause" "$hashes")"
-  case "$code" in
-  200 | 202)
-    PAUSE_ACTION_RESULT="paused"
-    return 0
-    ;;
-  404)
-    code="$(api_post_status "/api/v2/torrents/stop" "$hashes")"
-    if [[ "$code" == "200" || "$code" == "202" ]]; then
-      PAUSE_ACTION_RESULT="paused_via_stop"
-      return 0
-    fi
-    PAUSE_ACTION_RESULT="pause_failed_stop_http_${code}"
-    return 1
-    ;;
-  *)
-    PAUSE_ACTION_RESULT="pause_failed_http_${code}"
-    return 1
-    ;;
-  esac
 }
 
 strip_ansi() {
@@ -381,7 +294,6 @@ print_dashboard() {
   local queued_up="${16}"
   local unexpected_down="${17}"
   local total="${18}"
-  local show_unexpected="${19}"
   local cache_dot cache_age_color ts_short title footer_label cache_status
   local cache_line1 cache_line2 attn_total dl_total ul_total
   local -a lines=() bars=()
@@ -410,9 +322,6 @@ print_dashboard() {
   lines+=("$(printf '%-9s' "error") : $(printf '%5s' "$(color_num "$error_count" bad)")")
   lines+=("$(printf '%-9s' "missing") : $(printf '%5s' "$(color_num "$missing" bad)")")
   lines+=("$(printf '%-9s' "moving") : $(printf '%5s' "$(color_num "$moving" watch)")")
-  if [[ "$show_unexpected" -eq 1 ]]; then
-    lines+=("$(printf '%-9s' "unexpected") : $(printf '%5s' "$(color_num "$unexpected_down" bad)")")
-  fi
   lines+=("$(printf '%-9s' "active") : $(printf '%5s' "$(color_num "$down" good)")")
   lines+=("$(printf '%-9s' "stalled") : $(printf '%5s' "$(color_num "$stalled_dl" watch)")")
   lines+=("$(printf '%-9s' "stopped") : $(printf '%5s' "$(color_num "$stopped_dl" watch)")")
@@ -443,9 +352,6 @@ print_dashboard() {
   box_line "${lines[$idx]}" "$width"; ((idx++))
   box_line "${lines[$idx]}" "$width"; ((idx++))
   box_line "${lines[$idx]}" "$width"; ((idx++))
-  if [[ "$show_unexpected" -eq 1 ]]; then
-    box_line "${lines[$idx]}" "$width"; ((idx++))
-  fi
   box_bar "${bars[1]}" "$width"
   box_line "${lines[$idx]}" "$width"; ((idx++))
   box_line "${lines[$idx]}" "$width"; ((idx++))
@@ -618,65 +524,6 @@ while true; do
     ] | @tsv
   ' <<<"$TORRENTS_JSON")"
 
-  mapfile -t DOWN_HASHES_RAW < <(jq -r '
-    .[]
-    | select(
-        (.state // "" | ascii_downcase) == "downloading"
-        or (.state // "" | ascii_downcase) == "stalleddl"
-        or (.state // "" | ascii_downcase) == "queueddl"
-        or (.state // "" | ascii_downcase) == "forceddl"
-        or (.state // "" | ascii_downcase) == "metadl"
-      )
-    | (.hash // "" | ascii_downcase)
-  ' <<<"$TORRENTS_JSON")
-  declare -a UNEXPECTED_DOWN=()
-  declare -A SEEN_HASH=()
-  for torrent_hash in "${DOWN_HASHES_RAW[@]}"; do
-    [[ -z "$torrent_hash" ]] && continue
-    if [[ -n "${SEEN_HASH[$torrent_hash]+x}" ]]; then
-      continue
-    fi
-    SEEN_HASH["$torrent_hash"]=1
-    if [[ -z "${ALLOW_HASH_MAP[$torrent_hash]+x}" ]]; then
-      UNEXPECTED_DOWN+=("$torrent_hash")
-    fi
-  done
-
-  paused_now=0
-  if [[ "$ENFORCE_PAUSED_DL" -eq 1 && "${#UNEXPECTED_DOWN[@]}" -gt 0 ]]; then
-    pause_hashes="$(
-      IFS='|'
-      echo "${UNEXPECTED_DOWN[*]}"
-    )"
-    pause_action="pause_failed"
-    PAUSE_ACTION_RESULT="pause_failed"
-    if pause_with_fallback "$pause_hashes"; then
-      pause_action="$PAUSE_ACTION_RESULT"
-      paused_now="${#UNEXPECTED_DOWN[@]}"
-    else
-      pause_action="$PAUSE_ACTION_RESULT"
-    fi
-    alert_hashes="$(
-      IFS=,
-      echo "${UNEXPECTED_DOWN[*]}"
-    )"
-    if [[ "$DASHBOARD" -eq 0 ]]; then
-      printf '%s ALERT unexpected_downloading action=%s count=%s hashes=%s\n' \
-        "$(date '+%F %T')" "$pause_action" "${#UNEXPECTED_DOWN[@]}" "$alert_hashes"
-    fi
-    if [[ -n "$EVENTS_JSONL" ]]; then
-      hashes_json="$(printf '%s\n' "${UNEXPECTED_DOWN[@]}" | jq -Rsc 'split("\n")[:-1]')"
-      jq -cn \
-        --arg ts "$(date '+%F %T')" \
-        --arg action "$pause_action" \
-        --argjson count "${#UNEXPECTED_DOWN[@]}" \
-        --argjson paused "$paused_now" \
-        --argjson hashes "$hashes_json" \
-        '{ts:$ts,event:"unexpected_downloading",action:$action,count:$count,paused:$paused,hashes:$hashes}' \
-        >>"$EVENTS_JSONL"
-    fi
-  fi
-
   if [[ "$DASHBOARD" -eq 1 ]]; then
     printf '\033[2J\033[H'
     _FORCE_REDRAW=0
@@ -685,10 +532,10 @@ while true; do
       "$CACHE_TRANSPORT_LABEL" "$CACHE_TRANSPORT_DETAIL" "$CACHE_AGE_S" "$CACHE_ACTIVE_LEASES" \
       "$CHECKING" "$ERROR_COUNT" "$MISSING" "$MOVING" "$DOWN" "$STALLED_DL" \
       "$STOPPED_DL" "$STALLED_UP" "$UPLOADING" "$STOPPED_UP" "$QUEUED_UP" \
-      "${#UNEXPECTED_DOWN[@]}" "$TOTAL" "$ENFORCE_PAUSED_DL"
+      "0" "$TOTAL"
   else
-    printf '%s checking=%s missing=%s moving=%s down=%s up=%s unexpected_down=%s paused_now=%s count_zero=%s count_partial=%s top=%s stoppedUP=%s stoppedDL=%s stalledUP=%s uploading=%s queuedUP=%s\n' \
-      "$(date '+%F %T')" "$CHECKING" "$MISSING" "$MOVING" "$DOWN" "$UP" "${#UNEXPECTED_DOWN[@]}" "$paused_now" "$COUNT_ZERO" "$COUNT_PARTIAL" "$TOP_STATES" "$STOPPED_UP" "$STOPPED_DL" "$STALLED_UP" "$UPLOADING" "$QUEUED_UP"
+    printf '%s checking=%s missing=%s moving=%s down=%s up=%s count_zero=%s count_partial=%s top=%s stoppedUP=%s stoppedDL=%s stalledUP=%s uploading=%s queuedUP=%s\n' \
+      "$(date '+%F %T')" "$CHECKING" "$MISSING" "$MOVING" "$DOWN" "$UP" "$COUNT_ZERO" "$COUNT_PARTIAL" "$TOP_STATES" "$STOPPED_UP" "$STOPPED_DL" "$STALLED_UP" "$UPLOADING" "$QUEUED_UP"
   fi
   if [[ "$UNTIL_CLEAR" -eq 1 && "$CHECKING" -eq 0 && "$MOVING" -eq 0 && "$DOWN" -eq 0 ]]; then
     if [[ "$DASHBOARD" -eq 0 ]]; then
