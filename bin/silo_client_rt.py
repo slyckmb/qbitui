@@ -69,11 +69,13 @@ _MULTICALL_FIELDS = [
     "d.message=",        # [9]  tracker/error message
     "d.custom1=",        # [10] ruTorrent label → used as category
     "d.peers_accounted=",# [11] total peer count
-    "d.timestamp.load=", # [12] unix timestamp torrent was added to client
+    "d.load_date=",      # [12] unix timestamp torrent was added to client (available in 0.16.5+)
     "d.directory=",      # [13] save directory (multi-file: already includes torrent name)
     "d.hashing=",        # [14] 0=not hashing, 1=hash-checking (d.check_hash in progress)
     # NOTE: d.base_path= and d.tracker_domain= are NOT available on this rTorrent build.
     # base_path is computed in Python from directory + name (see _compute_base_path).
+    # NOTE: d.timestamp.load= was used but doesn't exist in rTorrent 0.16.5 (added in 0.17+).
+    # d.load_date= provides the same info and is available in all versions.
 ]
 
 # Indices into the data result list (0-based, post-consumption of arg3)
