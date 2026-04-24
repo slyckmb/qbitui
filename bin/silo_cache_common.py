@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 
 # ── Utilities ────────────────────────────────────────────────────────────────

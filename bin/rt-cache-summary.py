@@ -17,7 +17,7 @@ from typing import Any
 DEFAULT_DAEMON = Path(__file__).resolve().parent / "silo-rt-cache-daemon.py"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "silo-rt"
 SCRIPT_NAME = "rt-cache-summary.py"
-SCRIPT_VERSION = "1.0.2"
+SCRIPT_VERSION = "1.0.3"
 
 
 def parse_args() -> argparse.Namespace:

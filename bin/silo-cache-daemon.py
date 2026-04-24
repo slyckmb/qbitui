@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """silo-cache-daemon — qBittorrent shared cache daemon (silo-native implementation)."""
+
+__version__ = "1.0.0"
+
 import sys
 from pathlib import Path
 
