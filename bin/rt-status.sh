@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Version: 1.4.0
+# Version: 1.4.1
 # rt-status.sh — rTorrent state dashboard
 #
 # Reads rTorrent state from the shared silo cache by default.
 # Direct XMLRPC access is available only via --direct for one-off diagnostics.
 set -euo pipefail
 
-SCRIPT_VERSION="1.4.0"
+SCRIPT_VERSION="1.4.1"
 RT_CONTAINER="${RT_CONTAINER:-rtorrent_vpn}"
 RT_RPC_URL="${RT_RPC_URL:-http://localhost:8000/}"
 RT_CACHE_SUMMARY="${RT_CACHE_SUMMARY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rt-cache-summary.py}"
@@ -116,6 +116,7 @@ body = (
     '<param><value><string>main</string></value></param>'
     '<param><value><string>d.hash=</string></value></param>'
     '<param><value><string>d.state=</string></value></param>'
+    '<param><value><string>d.is_active=</string></value></param>'
     '<param><value><string>d.hashing=</string></value></param>'
     '<param><value><string>d.complete=</string></value></param>'
     '<param><value><string>d.down.rate=</string></value></param>'
@@ -185,11 +186,14 @@ def parse_multicall(xml):
             torrents.append(fields)
     return torrents
 
-def derive_state(state, hashing, complete, down_rate, up_rate, message):
+def derive_state(state, is_active, hashing, complete, down_rate, up_rate, message):
     if hashing > 0:
         return 'checking'
     if state == 0:
         return 'stoppedUP' if complete == 1 else 'stoppedDL'
+    # state == 1 (started in rtorrent) but is_active == 0 means paused
+    if is_active == 0:
+        return 'pausedUP' if complete == 1 else 'pausedDL'
     # state == 1 (started/active)
     if complete == 0:
         # incomplete + message = download is stuck/broken (fatal)
@@ -200,23 +204,24 @@ def derive_state(state, hashing, complete, down_rate, up_rate, message):
 raw = parse_multicall(xml)
 output = []
 for fields in raw:
-    if len(fields) < 10:
+    if len(fields) < 11:
         continue
     hash_     = str(fields[0])
     state     = int(fields[1]) if isinstance(fields[1], int) else 0
-    hashing   = int(fields[2]) if isinstance(fields[2], int) else 0
-    complete  = int(fields[3]) if isinstance(fields[3], int) else 0
-    down_rate = int(fields[4]) if isinstance(fields[4], int) else 0
-    up_rate   = int(fields[5]) if isinstance(fields[5], int) else 0
-    message   = str(fields[6]) if fields[6] is not None else ''
-    label     = str(fields[7]) if fields[7] is not None else ''
-    size      = int(fields[8]) if isinstance(fields[8], int) else 0
-    done      = int(fields[9]) if isinstance(fields[9], int) else 0
+    is_active = int(fields[2]) if isinstance(fields[2], int) else 0
+    hashing   = int(fields[3]) if isinstance(fields[3], int) else 0
+    complete  = int(fields[4]) if isinstance(fields[4], int) else 0
+    down_rate = int(fields[5]) if isinstance(fields[5], int) else 0
+    up_rate   = int(fields[6]) if isinstance(fields[6], int) else 0
+    message   = str(fields[7]) if fields[7] is not None else ''
+    label     = str(fields[8]) if fields[8] is not None else ''
+    size      = int(fields[9]) if isinstance(fields[9], int) else 0
+    done      = int(fields[10]) if isinstance(fields[10], int) else 0
     progress  = (done / size) if size > 0 else (1.0 if complete else 0.0)
 
     output.append({
         'hash':      hash_.lower(),
-        'state':     derive_state(state, hashing, complete, down_rate, up_rate, message),
+        'state':     derive_state(state, is_active, hashing, complete, down_rate, up_rate, message),
         'progress':  progress,
         'down_rate': down_rate,
         'up_rate':   up_rate,
@@ -504,12 +509,14 @@ while true; do
       RT_TRANSPORT_DETAIL="xmlrpc"
       RT_CACHE_AGE_S=""
       RT_ACTIVE_LEASES="0"
-      read -r CHECKING ERROR DOWN STALLED_DL SEEDING_UP STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
+      read -r CHECKING ERROR DOWN STALLED_DL PAUSED_DL PAUSED_UP SEEDING_UP STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TOP_STATES <<<"$(jq -r '
         [
           ([.[] | select(.state == "checking")]                             | length),
           ([.[] | select(.state == "error")]                                | length),
           ([.[] | select(.state == "downloading")]                          | length),
           ([.[] | select(.state == "stalledDL")]                            | length),
+          ([.[] | select(.state == "pausedDL")]                             | length),
+          ([.[] | select(.state == "pausedUP")]                             | length),
           ([.[] | select(.state == "uploading" or .state == "stalledUP")]   | length),
           ([.[] | select(.state == "stalledUP")]                            | length),
           ([.[] | select(.state == "uploading")]                            | length),
@@ -563,12 +570,14 @@ while true; do
       if [[ "$(jq -r '.ok' <<<"$SUMMARY_JSON")" != "true" ]]; then
         FETCH_ERROR="$(jq -r '.last_error // .status_error // "cache_missing"' <<<"$SUMMARY_JSON")"
       else
-        read -r CHECKING ERROR DOWN STALLED_DL STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TRACKER_WARN TOP_STATES <<<"$(jq -r '
+        read -r CHECKING ERROR DOWN STALLED_DL PAUSED_DL PAUSED_UP STALLED_UP UPLOADING STOPPED_UP STOPPED_DL TOTAL TRACKER_WARN TOP_STATES <<<"$(jq -r '
           [
             ((.states.checkingDL // 0) + (.states.checkingUP // 0) + (.states.checking // 0)),
             (.error_fatal // .states.error_fatal // .states.error // 0),
             (.states.downloading // 0),
             (.states.stalledDL // 0),
+            (.states.pausedDL // 0),
+            (.states.pausedUP // 0),
             (.states.stalledUP // 0),
             (.states.uploading // 0),
             (.states.stoppedUP // 0),
@@ -623,10 +632,10 @@ while true; do
       "$DOWN" "$STALLED_DL" "$STALLED_UP" "$UPLOADING" \
       "$STOPPED_UP" "$STOPPED_DL" "$TOTAL"
   else
-    printf '%s transport=%s detail=%q checking=%s error=%s trk_warn=%s downloading=%s stalledDL=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s stoppedDL=%s total=%s top=%s\n' \
+    printf '%s transport=%s detail=%q checking=%s error=%s trk_warn=%s downloading=%s stalledDL=%s pausedDL=%s pausedUP=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s stoppedDL=%s total=%s top=%s\n' \
       "$(date '+%F %T')" \
       "$RT_TRANSPORT_LABEL" "$RT_TRANSPORT_DETAIL" \
-      "$CHECKING" "$ERROR" "$TRACKER_WARN" "$DOWN" "$STALLED_DL" \
+      "$CHECKING" "$ERROR" "$TRACKER_WARN" "$DOWN" "$STALLED_DL" "$PAUSED_DL" "$PAUSED_UP" \
       "$SEEDING_UP" "$STALLED_UP" "$UPLOADING" \
       "$STOPPED_UP" "$STOPPED_DL" \
       "$TOTAL" "$TOP_STATES"
