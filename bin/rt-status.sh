@@ -357,11 +357,12 @@ print_dashboard() {
   local trk_breakdown="$9"
   local down="${10}"
   local stalled_dl="${11}"
-  local stalled_up="${12}"
-  local uploading="${13}"
-  local stopped_up="${14}"
-  local stopped_dl="${15}"
-  local total="${16}"
+  local paused_dl="${12}"
+  local stalled_up="${13}"
+  local uploading="${14}"
+  local stopped_up="${15}"
+  local stopped_dl="${16}"
+  local total="${17}"
   local cache_dot cache_age_color transport_extra ts_short title footer_label
   local cache_line1 cache_line2
   local attn_total dl_total ul_total
@@ -374,7 +375,7 @@ print_dashboard() {
   transport_extra="$(cache_status_text "${transport_detail:-fresh}" "${cache_age_s:-0}")"
   ts_short="$(date -d "$ts" '+%m-%d-%y %H:%M' 2>/dev/null || printf '%s' "$ts")"
   attn_total=$((checking + error))
-  dl_total=$((down + stalled_dl + stopped_dl))
+  dl_total=$((down + stalled_dl + paused_dl + stopped_dl))
   ul_total=$((uploading + stalled_up + stopped_up))
   title="rTorrent v${SCRIPT_VERSION}"
   if [[ "$transport_label" == "direct" ]]; then
@@ -390,6 +391,7 @@ print_dashboard() {
   lines+=("$(printf '%-9s' "fatal") : $(printf '%5s' "$(color_num "$error" bad)")")
   lines+=("$(printf '%-9s' "active") : $(printf '%5s' "$(color_num "$down" good)")")
   lines+=("$(printf '%-9s' "stalled") : $(printf '%5s' "$(color_num "$stalled_dl" watch)")")
+  lines+=("$(printf '%-9s' "paused") : $(printf '%5s' "$(color_num "$paused_dl" watch)")")
   lines+=("$(printf '%-9s' "stopped") : $(printf '%5s' "$(color_num "$stopped_dl" dim)")")
   lines+=("$(printf '%-9s' "active") : $(printf '%5s' "$(color_num "$uploading" good)")")
   lines+=("$(printf '%-9s' "idle") : $(printf '%5s' "$(color_num "$stalled_up" good)")")
@@ -427,14 +429,15 @@ print_dashboard() {
   box_line "${lines[4]}" "$width"
   box_line "${lines[5]}" "$width"
   box_line "${lines[6]}" "$width"
-  box_bar "${bars[2]}" "$width"
   box_line "${lines[7]}" "$width"
+  box_bar "${bars[2]}" "$width"
   box_line "${lines[8]}" "$width"
   box_line "${lines[9]}" "$width"
+  box_line "${lines[10]}" "$width"
   if [[ "$trk_warn" -gt 0 ]] 2>/dev/null; then
     box_bar "${bars[3]}" "$width"
     local idx
-    for ((idx = 10; idx < ${#lines[@]}; idx++)); do
+    for ((idx = 11; idx < ${#lines[@]}; idx++)); do
       box_line "${lines[$idx]}" "$width"
     done
     box_bar "${bars[4]}" "$width"
@@ -488,6 +491,8 @@ while true; do
   TRACKER_WARN_BREAKDOWN=""
   DOWN=0
   STALLED_DL=0
+  PAUSED_DL=0
+  PAUSED_UP=0
   SEEDING_UP=0
   STALLED_UP=0
   UPLOADING=0
@@ -629,7 +634,7 @@ while true; do
       "$(date '+%F %T')" \
       "$RT_TRANSPORT_LABEL" "$RT_TRANSPORT_DETAIL" "$RT_CACHE_AGE_S" "$RT_ACTIVE_LEASES" \
       "$CHECKING" "$ERROR" "$TRACKER_WARN" "$TRACKER_WARN_BREAKDOWN" \
-      "$DOWN" "$STALLED_DL" "$STALLED_UP" "$UPLOADING" \
+      "$DOWN" "$STALLED_DL" "$PAUSED_DL" "$STALLED_UP" "$UPLOADING" \
       "$STOPPED_UP" "$STOPPED_DL" "$TOTAL"
   else
     printf '%s transport=%s detail=%q checking=%s error=%s trk_warn=%s downloading=%s stalledDL=%s pausedDL=%s pausedUP=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s stoppedDL=%s total=%s top=%s\n' \
