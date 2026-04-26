@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 
 # ── Utilities ────────────────────────────────────────────────────────────────
@@ -208,6 +208,153 @@ def status_payload(
 
 
 # ── Daemon lifecycle ─────────────────────────────────────────────────────────
+
+def _validate_daemon_script(
+    script_path: Path,
+    daemon_name: str = "silo-rt-cache-daemon",
+) -> bool:
+    """
+    Validate that a file looks like a valid silo daemon script.
+
+    Checks:
+      - File exists and is readable
+      - File has content (size > 0)
+      - File contains daemon_name in docstring/header (first 500 chars)
+      - File starts with Python shebang
+    """
+    if not script_path.exists() or not script_path.is_file():
+        return False
+
+    try:
+        stat = script_path.stat()
+        if stat.st_size == 0:
+            return False
+    except OSError:
+        return False
+
+    try:
+        content = script_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+
+    # Check for Python shebang
+    lines = content.split("\n", 2)
+    if not lines or not lines[0].startswith("#!"):
+        return False
+    if "python" not in lines[0].lower():
+        return False
+
+    # Check for daemon marker in first 500 chars (docstring/comments)
+    if daemon_name not in content[:500]:
+        return False
+
+    return True
+
+
+def _find_running_daemon(
+    daemon_name: str = "silo-rt-cache-daemon",
+) -> Path | None:
+    """
+    Scan /proc for a running silo daemon process and return its script path.
+
+    Returns None if not found or /proc is not available.
+    Safe to call on non-Linux systems (gracefully returns None).
+    """
+    script_filename = f"{daemon_name}.py"
+    try:
+        import glob
+        proc_dirs = glob.glob("/proc/[0-9]*/cmdline")
+    except Exception:
+        return None
+
+    for cmdline_file in proc_dirs:
+        try:
+            with open(cmdline_file, "rb") as f:
+                cmdline_bytes = f.read()
+        except OSError:
+            # Permission denied or file disappeared
+            continue
+
+        try:
+            # cmdline uses null bytes as separators; split and decode
+            parts = cmdline_bytes.split(b"\x00")
+            cmdline = [p.decode("utf-8", errors="ignore") for p in parts if p]
+        except Exception:
+            continue
+
+        if any(script_filename in arg for arg in cmdline):
+            for arg in cmdline:
+                if script_filename in arg:
+                    script_path = Path(arg)
+                    if _validate_daemon_script(script_path, daemon_name=daemon_name):
+                        return script_path
+
+    return None
+
+
+def discover_daemon_script(
+    default_relative: Path,
+    daemon_name: str = "silo-rt-cache-daemon",
+    env_var: str = "SILO_RT_DAEMON_SCRIPT",
+) -> Path | None:
+    """
+    Discover a silo daemon script by trying multiple strategies in order:
+
+      1. env_var environment variable (if set and valid)
+      2. Running process detection (scan /proc for active daemon)
+      3. Default relative path (provided by caller)
+      4. Common alternate paths
+
+    daemon_name: marker string that must appear in the script's first 500 chars.
+    env_var:     name of the environment variable for explicit override.
+
+    Returns:
+      - Path object if a valid daemon script is found
+      - None if no valid daemon script is found (graceful degradation)
+    """
+    # Strategy 1: Environment variable override
+    env_override = os.environ.get(env_var, "").strip()
+    if env_override:
+        env_path = Path(env_override).expanduser().resolve()
+        if _validate_daemon_script(env_path, daemon_name=daemon_name):
+            return env_path
+
+    # Strategy 2: Find running daemon process
+    running = _find_running_daemon(daemon_name=daemon_name)
+    if running:
+        return running
+
+    # Strategy 3: Default relative path (original behavior)
+    if _validate_daemon_script(default_relative, daemon_name=daemon_name):
+        return default_relative
+
+    # Strategy 4: Try common alternate paths
+    script_filename = f"{daemon_name}.py"
+    alternates = [
+        Path.home() / "dev" / "tools" / "silo" / "bin" / script_filename,
+        Path("/tmp") / script_filename,
+    ]
+
+    # Also try paths from any .agent/worktrees subdirectories
+    try:
+        silo_root = default_relative.parent.parent
+        agent_dir = silo_root / ".agent" / "worktrees"
+        if agent_dir.exists():
+            for worktree_dir in agent_dir.iterdir():
+                if worktree_dir.is_dir():
+                    candidate = worktree_dir / "bin" / script_filename
+                    if _validate_daemon_script(candidate, daemon_name=daemon_name):
+                        return candidate
+    except Exception:
+        pass
+
+    # Check remaining alternates
+    for alt_path in alternates:
+        if _validate_daemon_script(alt_path, daemon_name=daemon_name):
+            return alt_path
+
+    return None
+
 
 def ensure_daemon(
     *,

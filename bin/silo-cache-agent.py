@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Thin wrapper around hashall's shared qB cache agent."""
+"""silo-cache-agent — qBittorrent shared cache agent (silo-native implementation)."""
 
-from silo_hashall_shared import exec_hashall_script
+__version__ = "1.0.0"
 
+import sys
+from pathlib import Path
 
-if __name__ == "__main__":
-    exec_hashall_script("qb-cache-agent.py", use_bypass=True)
+sys.path.insert(0, str(Path(__file__).parent))
+from qb_cache_lib import agent_main
+
+sys.exit(agent_main())

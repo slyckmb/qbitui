@@ -120,6 +120,23 @@ cache implementation. The local cache scripts now delegate to hashall's shared
 cache tooling so qB version handling and cache behavior live in one place.
 The default cache directory is `~/.cache/hashall-qb/`.
 
+## rTorrent Daemon Discovery
+
+The rTorrent dashboard uses an optional cache daemon (`silo-rt-cache-daemon.py`)
+to reduce polling load on the rTorrent server. The daemon is discovered
+automatically using a flexible strategy that works across main repo and worktree
+deployments:
+
+1. **Environment variable override**: Set `SILO_RT_DAEMON_SCRIPT` to a custom path
+2. **Running process detection**: Auto-discovers daemon via `/proc` scan
+3. **Default location**: Looks in the same directory as the dashboard
+4. **Common alternate paths**: Checks home directory and worktree locations
+
+No configuration is required for standard deployments. If the daemon is not found,
+the dashboard gracefully falls back to direct XMLRPC calls.
+
+For detailed configuration options and troubleshooting, see [`docs/DAEMON_DISCOVERY.md`](docs/DAEMON_DISCOVERY.md).
+
 ## Status
 
 Actively used. Arrow key support intentionally removed (tmux ESC sequence conflicts). A non-blocking input loop and curses-style buffered screen are planned improvements.

@@ -28,7 +28,7 @@ from pathlib import Path
 from http.cookiejar import CookieJar
 from typing import Optional
 
-from silo_hashall_shared import DEFAULT_HASHALL_CACHE_BASE
+from qb_cache_lib import DEFAULT_QB_CACHE_BASE as DEFAULT_HASHALL_CACHE_BASE
 
 try:
     import yaml  # type: ignore
@@ -60,8 +60,8 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.5.5"
-LAST_UPDATED = "2026-03-28"
+VERSION = "2.5.7"
+LAST_UPDATED = "2026-04-24"
 FULL_TUI_MIN_WIDTH = 120
 
 # ============================================================================
@@ -183,7 +183,7 @@ class ColorScheme:
             return self.CYAN_BOLD
         elif state in STATE_UPLOAD:
             return self.BLUE
-        elif state in STATE_PAUSED:
+        elif state in STATE_PAUSED or state in STATE_STOPPED:
             return self.FG_SECONDARY
         elif state in STATE_ERROR:
             return self.ERROR_BOLD
@@ -240,7 +240,7 @@ STATUS_MAPPING = [
     {"code": "MD",  "api": "metaDL",              "group": "downloading", "desc": "Downloading Metadata"},
     {"code": "FMD", "api": "forcedMetaDL",        "group": "downloading", "desc": "Forced Metadata DL"},
     {"code": "PD",  "api": "pausedDL",            "group": "paused",      "desc": "Paused Download"},
-    {"code": "PD",  "api": "stoppedDL",           "group": "paused",      "desc": "Stopped Download"}, # v5 alias
+    {"code": "PD",  "api": "stoppedDL",           "group": "stopped",     "desc": "Stopped Download"},
     {"code": "QD",  "api": "queuedDL",            "group": "downloading", "desc": "Queued Download"},
     {"code": "SD",  "api": "stalledDL",           "group": "downloading", "desc": "Stalled Download"},
     {"code": "E",   "api": "error",               "group": "error",       "desc": "Error"},
@@ -249,7 +249,7 @@ STATUS_MAPPING = [
     {"code": "CU",  "api": "checkingUP",          "group": "checking",    "desc": "Checking Upload"},
     {"code": "FU",  "api": "forcedUP",            "group": "uploading",   "desc": "Forced Upload"},
     {"code": "PU",  "api": "pausedUP",            "group": "paused",      "desc": "Paused Upload"},
-    {"code": "PU",  "api": "stoppedUP",           "group": "paused",      "desc": "Stopped Upload"}, # v5 alias
+    {"code": "PU",  "api": "stoppedUP",           "group": "stopped",     "desc": "Stopped Upload"},
     {"code": "QU",  "api": "queuedUP",            "group": "uploading",   "desc": "Queued Upload"},
     {"code": "SU",  "api": "stalledUP",           "group": "uploading",   "desc": "Stalled Upload"},
     {"code": "QC",  "api": "queuedForChecking",   "group": "checking",    "desc": "Queued for Checking"},
@@ -265,6 +265,7 @@ STATE_CODE = {item["api"]: item["code"] for item in STATUS_MAPPING}
 STATE_DOWNLOAD = {item["api"] for item in STATUS_MAPPING if item["group"] == "downloading"}
 STATE_UPLOAD = {item["api"] for item in STATUS_MAPPING if item["group"] == "uploading"}
 STATE_PAUSED = {item["api"] for item in STATUS_MAPPING if item["group"] == "paused"}
+STATE_STOPPED = {item["api"] for item in STATUS_MAPPING if item["group"] == "stopped"}
 STATE_ERROR = {item["api"] for item in STATUS_MAPPING if item["group"] == "error"}
 STATE_CHECKING = {item["api"] for item in STATUS_MAPPING if item["group"] == "checking"}
 STATE_COMPLETED = {item["api"] for item in STATUS_MAPPING if item["group"] == "completed"}
@@ -278,13 +279,14 @@ STATUS_FILTER_MAP = {
     "seeding": STATE_UPLOAD,
     "completed": STATE_COMPLETED,
     "paused": STATE_PAUSED,
+    "stopped": STATE_STOPPED,
     "errored": STATE_ERROR,
     "checking": STATE_CHECKING,
     "stalleddownloading": {"stalledDL"},
     "stalleduploading": {"stalledUP"},
     "stalled": {"stalledDL", "stalledUP"},
     "active": STATE_DOWNLOAD | STATE_UPLOAD,
-    "inactive": STATE_PAUSED | {"stalledDL", "stalledUP"},
+    "inactive": STATE_PAUSED | STATE_STOPPED | {"stalledDL", "stalledUP"},
 }
 
 
@@ -781,6 +783,8 @@ def state_group(state: str) -> str:
     s = state or ""
     if s in STATE_ERROR:
         return "error"
+    if s in STATE_STOPPED:
+        return "stopped"
     if s in STATE_PAUSED:
         return "paused"
     if s in STATE_DOWNLOAD:
@@ -810,7 +814,7 @@ def status_color(state: str, colors_instance=None) -> str:
         return "\033[38;2;78;201;176m\033[1m"  # cyan_bold
     if s in STATE_UPLOAD:
         return "\033[38;2;97;175;239m"  # blue
-    if s in STATE_PAUSED:
+    if s in STATE_PAUSED or s in STATE_STOPPED:
         return "\033[38;2;160;174;192m"  # fg_secondary
     if s in STATE_COMPLETED:
         return "\033[38;2;152;195;121m"  # green
@@ -1206,7 +1210,7 @@ def format_ts(value: int | float | None) -> str:
 
 
 def summary(torrents: list[dict]) -> str:
-    counts = {"down": 0, "up": 0, "paused": 0, "error": 0, "completed": 0, "other": 0}
+    counts = {"down": 0, "up": 0, "paused": 0, "stopped": 0, "error": 0, "completed": 0, "other": 0}
     for t in torrents:
         group = state_group(t.get("state", ""))
         if group == "downloading":
@@ -1215,6 +1219,8 @@ def summary(torrents: list[dict]) -> str:
             counts["up"] += 1
         elif group == "paused":
             counts["paused"] += 1
+        elif group == "stopped":
+            counts["stopped"] += 1
         elif group == "error":
             counts["error"] += 1
         elif group == "completed":
@@ -1305,6 +1311,7 @@ def draw_header_full_compact(
     downloading = sum(1 for t in torrents if t.get("state") in STATE_DOWNLOAD)
     seeding = sum(1 for t in torrents if t.get("state") in STATE_UPLOAD)
     paused = sum(1 for t in torrents if t.get("state") in STATE_PAUSED)
+    stopped = sum(1 for t in torrents if t.get("state") in STATE_STOPPED)
     completed = sum(1 for t in torrents if (t.get("progress") or 0) >= 1.0)
     errors = sum(1 for t in torrents if t.get("state") in STATE_ERROR)
 
@@ -1334,7 +1341,7 @@ def draw_header_full_compact(
     line2 = (
         f"{colors.CYAN}DL MiB/s{colors.RESET} {colors.CYAN_BOLD}{fmt_mib(total_dl)}{colors.RESET}  "
         f"{colors.BLUE}UL MiB/s{colors.RESET} {colors.BLUE_BOLD}{fmt_mib(total_ul)}{colors.RESET}  "
-        f"{colors.FG_SECONDARY}Dn:{downloading} Up:{seeding} Pa:{paused} Ok:{completed} Err:{errors}{colors.RESET}"
+        f"{colors.FG_SECONDARY}Dn:{downloading} Up:{seeding} Pa:{paused} St:{stopped} Ok:{completed} Err:{errors}{colors.RESET}"
     )
     _left3 = (
         f"{colors.FG_SECONDARY}Scope:{colors.RESET} {colors.YELLOW_BOLD}{scope_display}{colors.RESET}  "
@@ -1469,6 +1476,7 @@ def draw_header_v2(
     downloading = sum(1 for t in torrents if t.get("state") in STATE_DOWNLOAD)
     seeding = sum(1 for t in torrents if t.get("state") in STATE_UPLOAD)
     paused = sum(1 for t in torrents if t.get("state") in STATE_PAUSED)
+    stopped = sum(1 for t in torrents if t.get("state") in STATE_STOPPED)
     completed = sum(1 for t in torrents if t.get("progress", 0) == 1.0)
     errors = sum(1 for t in torrents if t.get("state") in STATE_ERROR)
 
@@ -1527,6 +1535,7 @@ def draw_header_v2(
     stats.append(f"{colors.CYAN}↓ {colors.CYAN_BOLD}{downloading}{colors.RESET}")
     stats.append(f"{colors.BLUE}↑ {colors.BLUE_BOLD}{seeding}{colors.RESET}")
     stats.append(f"{colors.FG_SECONDARY}⏸ {paused}{colors.RESET}")
+    stats.append(f"{colors.FG_SECONDARY}⏹ {stopped}{colors.RESET}")
     stats.append(f"{colors.GREEN}✓ {colors.GREEN_BOLD}{completed}{colors.RESET}")
 
     if errors > 0:
@@ -3127,7 +3136,14 @@ def main() -> int:
     _rt_pid_file      = _rt_cache_base / "daemon.pid"
     _rt_lock_file     = _rt_cache_base / "daemon.lock"
     _rt_log_file      = _rt_cache_base / "daemon.log"
-    _rt_daemon_script = Path(__file__).parent / "silo-rt-cache-daemon.py"
+    # Discover daemon script using flexible strategy: env var → running process → default → alternates
+    _rt_daemon_script = None
+    if _CC_AVAILABLE:
+        _rt_daemon_script = _cc.discover_daemon_script(
+            default_relative=Path(__file__).parent / "silo-rt-cache-daemon.py",
+            daemon_name="silo-rt-cache-daemon",
+            env_var="SILO_RT_DAEMON_SCRIPT",
+        )
     _rt_cache_max_age = max(rt_fetch_interval * 3, 30.0)  # stale threshold scales with interval
     _rt_daemon_ping_interval = 15.0   # how often to re-ping ensure_daemon
     _rt_last_daemon_ping = 0.0
@@ -3135,7 +3151,7 @@ def main() -> int:
     # Always restart the cache daemon on startup so it picks up any code changes.
     # The last-good cache file is preserved on disk; the brief respawn gap (~3-5s)
     # shows stale data — same behaviour as a normal cache-miss.
-    if _CC_AVAILABLE and _rt_daemon_script.exists():
+    if _CC_AVAILABLE and _rt_daemon_script is not None:
         _cc.stop_daemon(_rt_pid_file)
     _rt_cache_mtime = 0.0             # mtime of last successfully read cache file
 
@@ -3836,7 +3852,7 @@ def main() -> int:
             # ── rTorrent fetch (cache-first, direct XMLRPC fallback) ──────────
             if active_client == "rtorrent" and _RT_AVAILABLE:
                 # Ensure the cache daemon is running (fire-and-forget ping)
-                if _CC_AVAILABLE and _rt_daemon_script.exists() and rt_url:
+                if _CC_AVAILABLE and _rt_daemon_script is not None and rt_url:
                     if (now - _rt_last_daemon_ping) >= _rt_daemon_ping_interval:
                         _cc.ensure_daemon(
                             daemon_script=_rt_daemon_script,
@@ -3892,7 +3908,7 @@ def main() -> int:
                 # --rt-direct was explicitly requested.  In daemon/cache mode
                 # the cache is the source of truth; silently polling RT on
                 # stale cache makes overload conditions worse.
-                _daemon_mode = _CC_AVAILABLE and _rt_daemon_script.exists()
+                _daemon_mode = _CC_AVAILABLE and _rt_daemon_script is not None
                 if not _loaded_from_cache and (args.rt_direct or not _daemon_mode) and rt_url:
                     if not rt_cached_rows or (now - rt_cache_time) >= rt_fetch_interval:
                         try:
@@ -4039,7 +4055,7 @@ def main() -> int:
                 _rt_pid = _rt_meta.get("daemon_pid")
                 _rt_alive = bool(_rt_pid and _cc.daemon_running(_rt_pid_file) if _CC_AVAILABLE else False)
                 cache_info = {
-                    "enabled": _CC_AVAILABLE and _rt_daemon_script.exists(),
+                    "enabled": _CC_AVAILABLE and _rt_daemon_script is not None,
                     "base_path": str(_rt_cache_base),
                     "interval_s": _rt_meta.get("effective_interval_s"),
                     "cache_hits": rt_cache_hit_count,
@@ -4722,7 +4738,7 @@ def main() -> int:
                 if key == "a": scope = "all"; page = 0; focus_idx = 0; have_full_draw = False; continue
                 if key == "w": scope = "downloading"; page = 0; focus_idx = 0; have_full_draw = False; continue
                 if key == "u": scope = "uploading"; page = 0; focus_idx = 0; have_full_draw = False; continue
-                if key == "v": scope = "paused"; page = 0; focus_idx = 0; have_full_draw = False; continue
+                if key == "v": scope = "inactive"; page = 0; focus_idx = 0; have_full_draw = False; continue
                 if key == "e": scope = "completed"; page = 0; focus_idx = 0; have_full_draw = False; continue
                 if key == "g": scope = "error"; page = 0; focus_idx = 0; have_full_draw = False; continue
                 if key == "s": sort_index = (sort_index + 1) % len(sort_fields); have_full_draw = False; continue
