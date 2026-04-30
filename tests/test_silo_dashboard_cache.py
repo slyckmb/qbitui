@@ -143,3 +143,72 @@ def test_find_tracker_registry_resolves_sibling_traktor_from_worktree(monkeypatc
     monkeypatch.setattr(qbit_dashboard, "__file__", str(worktree_bin / "silo-dashboard.py"))
 
     assert qbit_dashboard._find_tracker_registry() == registry
+
+
+def test_status_filter_tracker_issue_matches_rt_tracker_message():
+    rows = [
+        {
+            "name": "seeding with tracker warning",
+            "state": "stalledUP",
+            "raw": {
+                "state": "stalledUP",
+                "message": 'Tracker: [Failure reason "Torrent has been deleted."]',
+            },
+        },
+        {
+            "name": "fatal incomplete",
+            "state": "error",
+            "raw": {"state": "error", "message": "Tracker: [Could not connect to server]"},
+        },
+        {"name": "plain seeding", "state": "stalledUP", "raw": {"state": "stalledUP"}},
+    ]
+
+    filtered = qbit_dashboard.apply_filters(
+        rows,
+        [{"type": "status", "values": ["tracker_issue"], "enabled": True}],
+    )
+
+    assert [row["name"] for row in filtered] == ["seeding with tracker warning"]
+
+
+def test_special_status_terms_are_valid_for_interactive_prompt_filtering():
+    assert "tracker_issue" in qbit_dashboard.STATUS_FILTER_TERMS
+    assert "trk_warn" in qbit_dashboard.STATUS_FILTER_TERMS
+    assert "no_working_tracker" in qbit_dashboard.STATUS_FILTER_TERMS
+    assert "tracker_no_working" in qbit_dashboard.STATUS_FILTER_TERMS
+
+
+def test_status_filter_tracker_issue_matches_qbit_manage_issue_tag():
+    rows = [
+        {"name": "qbit tagged", "state": "uploading", "tags": "~issue, tracker", "raw": {"state": "uploading"}},
+        {"name": "qbit clean", "state": "uploading", "tags": "tracker", "raw": {"state": "uploading"}},
+    ]
+
+    filtered = qbit_dashboard.apply_filters(
+        rows,
+        [{"type": "status", "values": ["tracker_issue"], "enabled": True}],
+    )
+
+    assert [row["name"] for row in filtered] == ["qbit tagged"]
+
+
+def test_status_filter_no_working_tracker_matches_rt_tracker_counts():
+    rows = [
+        {
+            "name": "zero usable trackers",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "trackers_count": 2, "real_trackers_count": 0},
+        },
+        {
+            "name": "has usable tracker",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "trackers_count": 2, "real_trackers_count": 1},
+        },
+    ]
+
+    filtered = qbit_dashboard.apply_filters(
+        rows,
+        [{"type": "status", "values": ["no_working_tracker"], "enabled": True}],
+    )
+
+    assert [row["name"] for row in filtered] == ["zero usable trackers"]

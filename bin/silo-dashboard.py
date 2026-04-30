@@ -273,6 +273,13 @@ STATE_COMPLETED = {item["api"] for item in STATUS_MAPPING if item["group"] == "c
 # Build lookup maps
 API_TERM_MAP = {item["api"].lower(): item["api"] for item in STATUS_MAPPING}
 
+SPECIAL_STATUS_FILTERS = {
+    "tracker_issue",
+    "trk_warn",
+    "no_working_tracker",
+    "tracker_no_working",
+}
+
 # Build filter map
 STATUS_FILTER_MAP = {
     "downloading": STATE_DOWNLOAD,
@@ -288,6 +295,12 @@ STATUS_FILTER_MAP = {
     "active": STATE_DOWNLOAD | STATE_UPLOAD,
     "inactive": STATE_PAUSED | STATE_STOPPED | {"stalledDL", "stalledUP"},
 }
+STATUS_FILTER_TERMS = (
+    set(STATUS_FILTER_MAP.keys())
+    | set(API_TERM_MAP.keys())
+    | {m["code"].lower() for m in STATUS_MAPPING}
+    | SPECIAL_STATUS_FILTERS
+)
 
 
 STASHED_KEY = ""
@@ -798,6 +811,49 @@ def state_group(state: str) -> str:
     if s.startswith("queued"):
         return "queued"
     return "other"
+
+
+def _row_tag_set(row: dict) -> set[str]:
+    raw_tags = row.get("tags") or row.get("raw", {}).get("tags") or ""
+    return {t.strip().lower() for t in str(raw_tags).split(",") if t.strip()}
+
+
+def row_has_tracker_issue(row: dict) -> bool:
+    raw = row.get("raw") or {}
+    state = str(row.get("state") or raw.get("state") or "").strip().lower()
+    message = str(row.get("message") or raw.get("message") or "").strip()
+    if message.startswith("Tracker:") and state != "error":
+        return True
+    # qbit_manage's default tracker-error tag is "issue"; local configs may
+    # use "~issue" to mark it as machine-managed.
+    return bool(_row_tag_set(row) & {"issue", "~issue", "tracker_issue"})
+
+
+def row_has_no_working_tracker(row: dict) -> bool:
+    raw = row.get("raw") or {}
+    try:
+        tracker_count = int(raw.get("trackers_count") or 0)
+        working_count = int(raw.get("real_trackers_count") or 0)
+    except Exception:
+        tracker_count = working_count = 0
+    if tracker_count > 0:
+        return working_count == 0
+
+    trackers = raw.get("trackers") or []
+    if not isinstance(trackers, list) or not trackers:
+        return False
+    seen_announce = False
+    for tracker in trackers:
+        if not isinstance(tracker, dict):
+            continue
+        url = str(tracker.get("url") or "")
+        if url and not url.startswith(("http", "udp", "ws")):
+            continue
+        seen_announce = True
+        status = str(tracker.get("status") or "").strip().lower()
+        if status in {"working", "2"}:
+            return False
+    return seen_announce
 
 
 # Legacy wrapper functions - will be removed after migration
@@ -2350,11 +2406,15 @@ def apply_filters(rows: list[dict], filters: list[dict]) -> list[dict]:
             filtered = [r for r in filtered if match_hash(r)]
         elif flt["type"] == "status":
             target_states = set()
+            special_terms = set()
             for status_term in flt["values"]:
                 if status_term == "all":
                     # If "all" is specified, include all possible states
                     target_states = {k.lower() for k in STATE_CODE.keys()}
                     break
+                if status_term in SPECIAL_STATUS_FILTERS:
+                    special_terms.add(status_term)
+                    continue
                 # Try to map status_term to one of the defined state groups or raw states
                 mapped_states = STATUS_FILTER_MAP.get(status_term)
                 if mapped_states:
@@ -2370,10 +2430,18 @@ def apply_filters(rows: list[dict], filters: list[dict]) -> list[dict]:
             def match_status(r):
                 raw_state = (r.get("raw", {}).get("state") or "").lower()
                 present = raw_state in target_states
+                if not present and special_terms:
+                    present = (
+                        (bool(special_terms & {"tracker_issue", "trk_warn"}) and row_has_tracker_issue(r))
+                        or (
+                            bool(special_terms & {"no_working_tracker", "tracker_no_working"})
+                            and row_has_no_working_tracker(r)
+                        )
+                    )
                 return not present if flt.get("negate") else present
             
             # Only apply filter if there are valid target states
-            if target_states:
+            if target_states or special_terms:
                 filtered = [r for r in filtered if match_status(r)]
     return filtered
 
@@ -4424,6 +4492,7 @@ def main() -> int:
 
                     help_lines.append(f"\n{colors.CYAN_BOLD}FILTER REFERENCE{colors.RESET}")
                     help_lines.append(f"{colors.YELLOW}f  Status:{colors.RESET}   Groups: downloading  seeding  paused  completed  error  checking  all")
+                    help_lines.append(f"             Tracker: tracker_issue  no_working_tracker")
                     help_lines.append(f"             Comma-list for multiple: seeding,paused")
                     help_lines.append(f"             Prefix ! to exclude:    !completed")
                     help_lines.append(f"{colors.YELLOW}c  Category:{colors.RESET} Exact category name  (case-insensitive)")
@@ -4792,9 +4861,6 @@ def main() -> int:
                     tty.setraw(fd); have_full_draw = False; continue
                 if key == "f":
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                    all_status_groups = sorted(STATUS_FILTER_MAP.keys())
-                    all_api_terms = sorted(API_TERM_MAP.keys())
-                    all_status_codes = sorted(list(set(m["code"].lower() for m in STATUS_MAPPING)))
                     current_status_filter_values = []
                     for f in filters:
                         if f["type"] == "status" and f.get("enabled", True):
@@ -4802,6 +4868,7 @@ def main() -> int:
                     _cur = ", ".join(current_status_filter_values) if current_status_filter_values else "none"
                     val = read_line(
                         f"Status  (downloading  seeding  paused  completed  error  checking  all"
+                        f"  tracker_issue  no_working_tracker"
                         f"  comma-list  !term=exclude  -=clear  blank=no change)  current={_cur}: "
                     ).strip()
                     if val == "-":
@@ -4813,8 +4880,7 @@ def main() -> int:
                             negate = True
                             val = val[1:]
                         statuses = [s.strip().lower() for s in val.split(",") if s.strip()]
-                        valid_terms = set(all_status_groups) | set(all_api_terms) | set(all_status_codes)
-                        statuses = [s for s in statuses if s in valid_terms]
+                        statuses = [s for s in statuses if s in STATUS_FILTER_TERMS]
                         if statuses:
                             filters.append({"type": "status", "values": statuses, "enabled": True, "negate": negate})
                     tty.setraw(fd); have_full_draw = False; continue
