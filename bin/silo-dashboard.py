@@ -60,7 +60,7 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.7.0"
+VERSION = "2.8.0"
 LAST_UPDATED = "2026-04-30"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -1315,8 +1315,14 @@ def summary(torrents: list[dict]) -> str:
 
 def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
     """Compact one-line cache status for the header."""
+    client_label = cache_info.get("client_label", "qbit")
+    client_name = _client_display_name(client_label)
+    client_color = _client_color(colors, client_label)
     if not cache_info.get("enabled"):
-        return f"{colors.FG_TERTIARY}Cache: OFF (direct API){colors.RESET}"
+        return (
+            f"{colors.FG_SECONDARY}Client:{colors.RESET} {client_color}{client_name}{colors.RESET}"
+            f"  {colors.FG_SECONDARY}Source:{colors.RESET} {colors.ERROR_BOLD}DIRECT{colors.RESET}"
+        )
     # Dot color encodes cache freshness: green=fresh, yellow=aging, red=stale, dim=unknown
     age = cache_info.get("cache_age_s")
     interval_s = cache_info.get("interval_s") or 30.0
@@ -1338,7 +1344,6 @@ def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
     age_str = f"age {float(age):.1f}s" if age is not None else "age ?"
     items = cache_info.get("items")
     items_str = f"  {colors.FG_TERTIARY}{items} items{colors.RESET}" if items is not None else ""
-    client_label = cache_info.get("client_label", "qbit")
     qb_profile = cache_info.get("qb_profile") or {}
     qb_app = str(qb_profile.get("app_version") or "").strip()
     qb_api = str(qb_profile.get("webapi_version") or "").strip()
@@ -1363,7 +1368,9 @@ def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
     )
     no_daemon_str = f"  {colors.FG_TERTIARY}[no-daemon]{colors.RESET}" if cache_info.get("no_daemon") else ""
     return (
-        f"{colors.FG_SECONDARY}Cache:{colors.RESET} {dot} {colors.FG_TERTIARY}{path_short}{colors.RESET}"
+        f"{colors.FG_SECONDARY}Client:{colors.RESET} {client_color}{client_name}{colors.RESET}"
+        f"  {colors.FG_SECONDARY}Source:{colors.RESET} {colors.GREEN_BOLD}CACHE{colors.RESET} {dot}"
+        f"  {colors.FG_TERTIARY}{path_short}{colors.RESET}"
         f"  {colors.FG_SECONDARY}bulk={colors.YELLOW}{interval_str}{colors.RESET}"
         f"{fast_str}"
         f"  {colors.FG_SECONDARY}↑cache {colors.CYAN}{hits}{colors.RESET}"
@@ -1371,6 +1378,35 @@ def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
         f"  {colors.FG_SECONDARY}hit {colors.GREEN}{hit_pct}{colors.RESET}"
         f"  {colors.FG_TERTIARY}{age_str}{colors.RESET}"
         f"{items_str}{leases_str}{qb_profile_str}{no_daemon_str}{err_str}"
+    )
+
+
+def _client_display_name(client_label: str) -> str:
+    return {
+        "qbit": "qBittorrent",
+        "rt": "rTorrent",
+        "sab": "SABnzbd",
+    }.get(str(client_label or "").lower(), str(client_label or "Client"))
+
+
+def _client_color(colors: ColorScheme, client_label: str) -> str:
+    return {
+        "qbit": colors.CYAN_BOLD,
+        "rt": colors.ORANGE_BOLD,
+        "sab": colors.PURPLE_BOLD,
+    }.get(str(client_label or "").lower(), colors.CYAN_BOLD)
+
+
+def _client_source_badge(cache_info: dict | None, colors: ColorScheme) -> str:
+    if not cache_info:
+        return ""
+    client_label = cache_info.get("client_label", "qbit")
+    client_name = _client_display_name(client_label)
+    source = "CACHE" if cache_info.get("enabled") else "DIRECT"
+    source_color = colors.GREEN_BOLD if source == "CACHE" else colors.ERROR_BOLD
+    return (
+        f"{colors.FG_SECONDARY}Client:{colors.RESET} {_client_color(colors, client_label)}{client_name}{colors.RESET}"
+        f"  {colors.FG_SECONDARY}Source:{colors.RESET} {source_color}{source}{colors.RESET}"
     )
 
 
@@ -1418,6 +1454,7 @@ def draw_header_full_compact(
 
     line1 = (
         f"{colors.CYAN_BOLD}SILO{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}  "
+        f"{_client_source_badge(cache_info, colors)}  "
         f"{colors.FG_SECONDARY}@ {colors.BLUE}{api_url}{colors.RESET}  "
         f"{colors.FG_SECONDARY}{datetime.now().strftime('%Y-%m-%d')}{colors.RESET}"
     )
@@ -1575,7 +1612,8 @@ def draw_header_v2(
 
     # Line 1: Title bar (ASCII chars for consistent width)
     left = f"{colors.CYAN_BOLD}* SILO{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}"
-    center = f"{colors.FG_SECONDARY}@ {colors.BLUE}{api_url}{colors.RESET}"
+    badge = _client_source_badge(cache_info, colors)
+    center = f"{badge}  {colors.FG_SECONDARY}@ {colors.BLUE}{api_url}{colors.RESET}" if badge else f"{colors.FG_SECONDARY}@ {colors.BLUE}{api_url}{colors.RESET}"
     right = f"{colors.FG_SECONDARY}{datetime.now().strftime('%Y-%m-%d')}{colors.RESET}"
 
     # Calculate spacing using visible_len (accounts for emoji width)
@@ -1664,10 +1702,20 @@ def draw_header_minimal(
     scope: str,
     page: int,
     total_pages: int,
-    width: int
+    width: int,
+    cache_info: dict | None = None,
+    torrents: list[dict] | None = None,
+    sort_field: str = "",
+    sort_desc: bool = True,
+    filters: list[dict] | None = None,
 ) -> list[str]:
+    torrents = torrents or []
+    filters = filters or []
     scope_display = scope.upper() if scope != "all" else "ALL"
-    left = f"{colors.CYAN_BOLD}SILO{colors.RESET} {colors.FG_SECONDARY}v{version} {scope_display}{colors.RESET}"
+    badge = _client_source_badge(cache_info, colors)
+    left = f"{colors.CYAN_BOLD}SILO{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}"
+    if badge:
+        left = f"{left}  {badge}"
     right = f"{colors.FG_SECONDARY}Pg {page + 1}/{total_pages}{colors.RESET}"
 
     inner_width = max(1, width - 4)
@@ -1678,10 +1726,38 @@ def draw_header_minimal(
     else:
         line = truncate(base, inner_width)
 
-    return [
-        f"│ {line} │",
-        "─" * width,
-    ]
+    cache_line = ""
+    if cache_info:
+        age = cache_info.get("cache_age_s")
+        age_str = f"age {float(age):.0f}s" if age is not None else "age ?"
+        items = cache_info.get("items")
+        hits = cache_info.get("cache_hits", 0)
+        direct = cache_info.get("direct_hits", 0)
+        total = hits + direct
+        hit_pct = f"{(hits / total * 100):.0f}%" if total > 0 else "--"
+        ti_count = sum(1 for row in torrents if row_has_tracker_issue(row))
+        nt_count = sum(1 for row in torrents if row_has_no_working_tracker(row))
+        total_dl = sum((row.get("raw") or {}).get("dlspeed") or row.get("dlspeed") or 0 for row in torrents)
+        total_ul = sum((row.get("raw") or {}).get("upspeed") or row.get("upspeed") or 0 for row in torrents)
+        def _mib(value: int | float) -> str:
+            x = float(value or 0) / (1024 * 1024)
+            return f"{x:.1f}".rstrip("0").rstrip(".") or "0"
+        cache_line = (
+            f"{colors.FG_SECONDARY}Scope:{colors.RESET} {colors.YELLOW_BOLD}{scope_display}{colors.RESET}  "
+            f"{colors.FG_SECONDARY}Sort:{colors.RESET} {colors.YELLOW}{sort_field}{'↓' if sort_desc else '↑'}{colors.RESET}  "
+            f"{colors.FG_SECONDARY}Filters:{len([f for f in filters if f.get('enabled', True)])}{colors.RESET}  "
+            f"{colors.FG_SECONDARY}{age_str}{colors.RESET}  "
+            f"{colors.FG_TERTIARY}{items if items is not None else len(torrents)} items{colors.RESET}  "
+            f"{colors.ERROR_BOLD}ti {ti_count}{colors.RESET}  {colors.YELLOW}nt {nt_count}{colors.RESET}  "
+            f"{colors.CYAN}DL {_mib(total_dl)}{colors.RESET}  {colors.BLUE}UL {_mib(total_ul)}{colors.RESET}  "
+            f"{colors.GREEN}hit {hit_pct}{colors.RESET}"
+        )
+
+    out = [f"│ {line} │"]
+    if cache_line:
+        out.append(truncate(cache_line, width))
+    out.append("─" * width)
+    return out
 
 
 def draw_footer_v2(
@@ -3674,18 +3750,38 @@ def main() -> int:
 
     def build_narrow_list_block(page_rows_local: list[dict], content_width_local: int) -> list[str]:
         lines: list[str] = []
+
+        def fmt_scaled(value: int | float | None, scale: float) -> str:
+            try:
+                x = float(value or 0) / scale
+            except Exception:
+                x = 0.0
+            if x <= 0:
+                return "0"
+            if x >= 100:
+                return f"{x:,.0f}"
+            return f"{x:,.1f}".rstrip("0").rstrip(".")
+
         no_width = max(2, len(str(max(0, len(page_rows_local) - 1))))
         trk_width = min(12, 6 + max(0, content_width_local - 96) // 12)
         cat_width = min(16, 8 + max(0, content_width_local - 96) // 10)
         sp_width = 6 if content_width_local >= 96 else 0
         added_width = 11
         pct_width = 4
-        reserved_width = 25 + no_width + trk_width + cat_width + (sp_width + 1 if sp_width else 0) + (2 if sp_width else 0)
+        issue_width = 1
+        size_width = 5
+        ul_width = 5
+        seed_width = 4
+        reserved_width = (
+            41 + no_width + issue_width + trk_width + cat_width + size_width + ul_width + seed_width
+            + (sp_width + 1 if sp_width else 0)
+            + (2 if sp_width else 0)
+        )
         name_width = max(1, content_width_local - reserved_width)
         if sp_width:
-            narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Name':<{name_width}} {'~':<1} {'Sp':<{sp_width}} {'Trk':<{trk_width}} {'Cat':<{cat_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
+            narrow_header = f"{'F':<1} {'No':<{no_width}} {'!':<{issue_width}} {'ST':<2} {'Name':<{name_width}} {'~':<1} {'Sp':<{sp_width}} {'Trk':<{trk_width}} {'Cat':<{cat_width}} {'Sz':>{size_width}} {'UL':>{ul_width}} {'Sd':>{seed_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
         else:
-            narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Name':<{name_width}} {'Trk':<{trk_width}} {'Cat':<{cat_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
+            narrow_header = f"{'F':<1} {'No':<{no_width}} {'!':<{issue_width}} {'ST':<2} {'Name':<{name_width}} {'Trk':<{trk_width}} {'Cat':<{cat_width}} {'Sz':>{size_width}} {'UL':>{ul_width}} {'Sd':>{seed_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
         narrow_divider = "-" * content_width_local
 
         lines.append(truncate(narrow_header, content_width_local))
@@ -3695,12 +3791,17 @@ def main() -> int:
             selected = selection_hash == item.get("hash")
             has_tracker_issue = row_has_tracker_issue(item)
             focus_marker = ">" if idx == focus_idx else " "
+            raw = item.get("raw") or {}
             st = str(item.get("st") or "?")
             name = truncate(str(item.get("name") or "-"), name_width).ljust(name_width)
+            issue_val = "!" if has_tracker_issue else " "
             nohl_val = str(item.get("nohl") or " ")
             sp_val = truncate(str(item.get("save_path") or "-"), sp_width).ljust(sp_width) if sp_width else ""
             trk = truncate(str(item.get("tracker") or "-"), trk_width).ljust(trk_width)
             cat = truncate(str(item.get("category") or "-"), cat_width).ljust(cat_width)
+            size_txt = truncate(fmt_scaled(raw.get("size") or raw.get("total_size") or 0, 1024.0 ** 3), size_width).rjust(size_width)
+            ul_txt = truncate(fmt_scaled(raw.get("upspeed") or 0, 1024.0 ** 2), ul_width).rjust(ul_width)
+            seed_txt = truncate(f"{int(item.get('seeds') or 0):,}", seed_width).rjust(seed_width)
             added_short = str(item.get("added_short") or "-")[:added_width].ljust(added_width)
             pct_value = str(item.get("progress") or "-")
             pct = truncate(pct_value, pct_width).rjust(pct_width)
@@ -3712,13 +3813,13 @@ def main() -> int:
                 cat_p  = ANSI_RE.sub("", cat).ljust(cat_width)
                 if sp_width:
                     row_plain = (
-                        f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {name_p} "
-                        f"{nohl_val:<1} {sp_p} {trk_p} {cat_p} {added_short} {pct}"
+                        f"{focus_marker:<1} {idx:<{no_width}} {issue_val:<{issue_width}} {st:<2} {name_p} "
+                        f"{nohl_val:<1} {sp_p} {trk_p} {cat_p} {size_txt} {ul_txt} {seed_txt} {added_short} {pct}"
                     )
                 else:
                     row_plain = (
-                        f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {name_p} "
-                        f"{trk_p} {cat_p} {added_short} {pct}"
+                        f"{focus_marker:<1} {idx:<{no_width}} {issue_val:<{issue_width}} {st:<2} {name_p} "
+                        f"{trk_p} {cat_p} {size_txt} {ul_txt} {seed_txt} {added_short} {pct}"
                     )
                 row_plain = row_plain[:content_width_local].ljust(content_width_local)
                 lines.append(f"{colors.SELECTION}{row_plain}{colors.RESET}")
@@ -3731,13 +3832,18 @@ def main() -> int:
                 )
                 st_colored = f"{status_col}{st:<2}{colors.RESET}"
                 name_colored = f"{status_col}{name}{colors.RESET}"
+                issue_colored = (
+                    f"{colors.ERROR_BOLD}{issue_val:<{issue_width}}{colors.RESET}"
+                    if has_tracker_issue
+                    else f"{issue_val:<{issue_width}}"
+                )
                 focus_col = f"{colors.CYAN}{focus_marker}{colors.RESET}" if idx == focus_idx else " "
                 trk_colored = f"{colors.ORANGE}{trk}{colors.RESET}"
                 cat_colored = f"{colors.PURPLE}{cat}{colors.RESET}"
                 if sp_width:
-                    line = f"{focus_col} {no_colored} {st_colored} {name_colored} {nohl_val:<1} {sp_val} {trk_colored} {cat_colored} {added_short} {pct}"
+                    line = f"{focus_col} {no_colored} {issue_colored} {st_colored} {name_colored} {nohl_val:<1} {sp_val} {trk_colored} {cat_colored} {size_txt} {ul_txt} {seed_txt} {added_short} {pct}"
                 else:
-                    line = f"{focus_col} {no_colored} {st_colored} {name_colored} {trk_colored} {cat_colored} {added_short} {pct}"
+                    line = f"{focus_col} {no_colored} {issue_colored} {st_colored} {name_colored} {trk_colored} {cat_colored} {size_txt} {ul_txt} {seed_txt} {added_short} {pct}"
                 if visible_len(line) > content_width_local:
                     line = truncate(line, content_width_local)
                 else:
@@ -4360,17 +4466,35 @@ def main() -> int:
                     if not have_full_draw:
                         output_buffer = "\033[H\033[J" # Start with clear
                         if narrow_mode:
+                            if active_client == "rtorrent":
+                                _display_torrents = rt_cached_torrents
+                            elif active_client == "sabnzbd":
+                                _display_torrents = sab_cached_torrents
+                            else:
+                                _display_torrents = cached_torrents
                             header_lines = draw_header_minimal(
                                 colors=colors,
                                 version=VERSION,
                                 scope=scope,
                                 page=page,
                                 total_pages=total_pages,
-                                width=content_width
+                                width=content_width,
+                                cache_info=cache_info,
+                                torrents=_display_torrents,
+                                sort_field=sort_fields[sort_index],
+                                sort_desc=sort_desc,
+                                filters=filters,
                             )
                         else:
-                            _display_url = f"[rt] {rt_url}" if active_client == "rtorrent" else api_url
-                            _display_torrents = rt_cached_torrents if active_client == "rtorrent" else cached_torrents
+                            if active_client == "rtorrent":
+                                _display_url = f"[rt] {rt_url}"
+                                _display_torrents = rt_cached_torrents
+                            elif active_client == "sabnzbd":
+                                _display_url = f"[sab] {_sab_conn.api_url if _sab_conn else _sab_url}"
+                                _display_torrents = sab_cached_torrents
+                            else:
+                                _display_url = api_url
+                                _display_torrents = cached_torrents
                             header_lines = draw_header_full_compact(
                                 colors=colors,
                                 api_url=_display_url,

@@ -275,6 +275,65 @@ def test_trackers_tab_includes_tracker_issue_banner():
     ]
 
 
+def test_cache_status_line_uses_full_client_and_cache_source():
+    colors = qbit_dashboard.ColorScheme()
+    line = qbit_dashboard._fmt_cache_status_line(
+        {
+            "enabled": True,
+            "client_label": "rt",
+            "base_path": "/home/michael/.cache/silo-rt",
+            "interval_s": 30,
+            "cache_age_s": 1,
+            "cache_hits": 3,
+            "direct_hits": 0,
+            "items": 10,
+        },
+        colors,
+    )
+    plain = qbit_dashboard.ANSI_RE.sub("", line)
+
+    assert "Client: rTorrent" in plain
+    assert "Source: CACHE" in plain
+
+
+def test_minimal_header_includes_sa_line():
+    colors = qbit_dashboard.ColorScheme()
+    rows = [
+        {
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "message": "Tracker: [Timeout]"},
+        }
+    ]
+
+    lines = qbit_dashboard.draw_header_minimal(
+        colors=colors,
+        version="2.8.0",
+        scope="all",
+        page=0,
+        total_pages=1,
+        width=140,
+        cache_info={
+            "enabled": True,
+            "client_label": "rt",
+            "cache_age_s": 2,
+            "items": 1,
+            "cache_hits": 1,
+            "direct_hits": 0,
+        },
+        torrents=rows,
+        sort_field="added_on",
+        sort_desc=True,
+        filters=[],
+    )
+    plain = [qbit_dashboard.ANSI_RE.sub("", line) for line in lines]
+
+    assert "Client: rTorrent" in plain[0]
+    assert "Source: CACHE" in plain[0]
+    assert "Scope: ALL" in plain[1]
+    assert "ti 1" in plain[1]
+    assert "hit 100%" in plain[1]
+
+
 def test_status_filter_no_working_tracker_matches_rt_tracker_counts():
     rows = [
         {
