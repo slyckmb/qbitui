@@ -1,5 +1,7 @@
 from pathlib import Path
 import importlib.util
+import sys
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +85,21 @@ def test_tracker_label_from_url_prefers_registry_pattern(monkeypatch, tmp_path):
 
     monkeypatch.setattr(silo_client_rt, "_TRACKER_URL_PATTERN_MAP", None)
     monkeypatch.setattr(silo_client_rt, "_find_tracker_registry", lambda: registry)
+    monkeypatch.setitem(
+        sys.modules,
+        "yaml",
+        SimpleNamespace(
+            safe_load=lambda _text: {
+                "trackers": {
+                    "torrentday": {
+                        "qbitmanage": {
+                            "tracker_url_pattern": r"torrentday|td\.jumbohostpro\.eu|sync\.td-peers\.com"
+                        }
+                    }
+                }
+            }
+        ),
+    )
 
     label = silo_client_rt._tracker_label_from_url(
         "http://td.jumbohostpro.eu/tNtOztQuQIzYElZyDuuJIeLJW8chntAH/announce"

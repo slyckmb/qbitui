@@ -125,7 +125,7 @@ def test_build_rows_prefers_registry_match_over_hostname_fallback():
             }
         ],
         {},
-        {r"tracker\\.example": "ExampleTracker"},
+        {r"tracker\.example": "ExampleTracker"},
     )
 
     assert rows[0]["tracker"] == "ExampleTracker"
