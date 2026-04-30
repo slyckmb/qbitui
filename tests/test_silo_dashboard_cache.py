@@ -212,6 +212,69 @@ def test_status_filter_ti_alias_matches_tracker_issue():
     assert [row["name"] for row in filtered] == ["rt warning"]
 
 
+def test_tracker_issue_summary_reports_rt_message():
+    row = {
+        "name": "rt warning",
+        "tracker": "privatehd",
+        "state": "stalledUP",
+        "raw": {
+            "state": "stalledUP",
+            "tracker": "https://tracker.example/announce",
+            "message": 'Tracker: [Failure reason "Torrent not found"]',
+        },
+    }
+
+    summary = qbit_dashboard.tracker_issue_summary(row)
+
+    assert summary["type"] == "tracker_issue"
+    assert summary["source"] == "rtorrent_message"
+    assert summary["tracker"] == "privatehd"
+    assert summary["message"] == 'Tracker: [Failure reason "Torrent not found"]'
+
+
+def test_info_tab_includes_tracker_issue_message():
+    row = {
+        "name": "rt warning",
+        "state": "stalledUP",
+        "category": "-",
+        "tags": "-",
+        "size": "1 GiB",
+        "progress": "100%",
+        "ratio": "1.0",
+        "dlspeed": "0 B/s",
+        "upspeed": "0 B/s",
+        "eta": "-",
+        "hash": "abc",
+        "tracker": "privatehd",
+        "raw": {"state": "stalledUP", "message": "Tracker: [Timeout was reached]"},
+    }
+
+    lines = qbit_dashboard.render_info_lines(row, 100)
+
+    assert "Tracker issue:" in lines
+    assert "Type: tracker_issue" in lines
+    assert "Source: rtorrent_message" in lines
+    assert "Message: Tracker: [Timeout was reached]" in lines
+
+
+def test_trackers_tab_includes_tracker_issue_banner():
+    row = {
+        "state": "stalledUP",
+        "tracker": "privatehd",
+        "raw": {"state": "stalledUP", "message": "Tracker: [Timeout was reached]"},
+    }
+    trackers = [{"status": "working", "tier": "0", "url": "https://tracker.example/announce"}]
+
+    lines = qbit_dashboard.render_trackers_lines(trackers, 100, row)
+
+    assert lines[:4] == [
+        "Tracker issue:",
+        "  Type: tracker_issue",
+        "  Source: rtorrent_message",
+        "  Message: Tracker: [Timeout was reached]",
+    ]
+
+
 def test_status_filter_no_working_tracker_matches_rt_tracker_counts():
     rows = [
         {

@@ -60,7 +60,7 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.6.0"
+VERSION = "2.7.0"
 LAST_UPDATED = "2026-04-30"
 FULL_TUI_MIN_WIDTH = 120
 
@@ -829,6 +829,30 @@ def row_has_tracker_issue(row: dict) -> bool:
     # qbit_manage's default tracker-error tag is "issue"; local configs may
     # use "~issue" to mark it as machine-managed.
     return bool(_row_tag_set(row) & {"issue", "~issue", "tracker_issue"})
+
+
+def tracker_issue_summary(row: dict) -> dict[str, str]:
+    raw = row.get("raw") or {}
+    state = str(row.get("state") or raw.get("state") or "").strip().lower()
+    message = str(row.get("message") or raw.get("message") or "").strip()
+    if message.startswith("Tracker:") and state != "error":
+        tracker = str(row.get("tracker") or raw.get("tracker") or "-").strip() or "-"
+        return {
+            "type": "tracker_issue",
+            "source": "rtorrent_message",
+            "tracker": tracker,
+            "message": message,
+        }
+    tags = _row_tag_set(row)
+    issue_tags = sorted(tags & {"issue", "~issue", "tracker_issue"})
+    if issue_tags:
+        return {
+            "type": "tracker_issue",
+            "source": "tag",
+            "tracker": str(row.get("tracker") or raw.get("tracker") or "-").strip() or "-",
+            "message": f"qbit_manage tag(s): {', '.join(issue_tags)}",
+        }
+    return {}
 
 
 def row_has_no_working_tracker(row: dict) -> bool:
@@ -2609,6 +2633,7 @@ def fetch_peers(opener: urllib.request.OpenerDirector, api_url: str, hash_value:
 
 def render_info_lines(item: dict, width: int) -> list[str]:
     raw = item.get("raw") or {}
+    tracker_issue = tracker_issue_summary(item)
     lines = [
         f"Name: {item.get('name')}",
         "-" * width,
@@ -2622,6 +2647,17 @@ def render_info_lines(item: dict, width: int) -> list[str]:
         f"ETA: {item.get('eta')}",
         f"Hash: {item.get('hash')}",
     ]
+    if tracker_issue:
+        lines.extend(
+            [
+                "-" * width,
+                "Tracker issue:",
+                f"  Type: {tracker_issue.get('type')}",
+                f"  Source: {tracker_issue.get('source')}",
+                f"  Tracker: {tracker_issue.get('tracker')}",
+                f"  Message: {tracker_issue.get('message')}",
+            ]
+        )
     # ── Paths block ───────────────────────────────────────────────────────────
     save_path = (raw.get("save_path") or "").rstrip("/").rstrip("\\")
     dl_path   = (raw.get("download_path") or "").rstrip("/").rstrip("\\")
@@ -2684,12 +2720,22 @@ def render_info_lines(item: dict, width: int) -> list[str]:
     return wrapped
 
 
-def render_trackers_lines(trackers: list[dict], width: int) -> list[str]:
+def render_trackers_lines(trackers: list[dict], width: int, item: dict | None = None) -> list[str]:
+    issue = tracker_issue_summary(item or {}) if item else {}
+    issue_lines: list[str] = []
+    if issue:
+        issue_lines = [
+            "Tracker issue:",
+            f"  Type: {issue.get('type')}",
+            f"  Source: {issue.get('source')}",
+            f"  Message: {issue.get('message')}",
+            "-" * width,
+        ]
     if not trackers:
-        return ["No trackers."]
+        return issue_lines + ["No trackers."]
     headers = ["Status", "Tier", "URL"]
     widths = [10, 6, max(20, width - 20)]
-    lines = []
+    lines = issue_lines
     lines.append(f"{headers[0]:<{widths[0]}} {headers[1]:<{widths[1]}} {headers[2]}")
     lines.append("-" * width)
     for row in trackers:
@@ -3533,6 +3579,7 @@ def main() -> int:
             status_col = colors.status_color(item.get("state") or "")
             focus_marker = ">" if idx == focus_idx else " "
             raw = item.get("raw") or {}
+            has_tracker_issue = row_has_tracker_issue(item)
 
             hash_value = str(item.get("hash") or "")
             hash_display = hash_value if show_full_hash else hash_value[:6] or "-"
@@ -3570,6 +3617,8 @@ def main() -> int:
                     piece = cell(c, values[c])
                     if c == "f" and idx == focus_idx:
                         row_parts.append(f"{colors.CYAN}{piece}{colors.RESET}")
+                    elif c == "no" and has_tracker_issue:
+                        row_parts.append(f"{colors.ERROR_BOLD}{piece}{colors.RESET}")
                     elif c in ("st", "name"):
                         row_parts.append(f"{status_col}{piece}{colors.RESET}")
                     elif c == "trk":
@@ -3644,6 +3693,7 @@ def main() -> int:
 
         for idx, item in enumerate(page_rows_local, 0):
             selected = selection_hash == item.get("hash")
+            has_tracker_issue = row_has_tracker_issue(item)
             focus_marker = ">" if idx == focus_idx else " "
             st = str(item.get("st") or "?")
             name = truncate(str(item.get("name") or "-"), name_width).ljust(name_width)
@@ -3674,15 +3724,20 @@ def main() -> int:
                 lines.append(f"{colors.SELECTION}{row_plain}{colors.RESET}")
             else:
                 status_col = colors.status_color(item.get("state") or "")
+                no_colored = (
+                    f"{colors.ERROR_BOLD}{idx:<{no_width}}{colors.RESET}"
+                    if has_tracker_issue
+                    else f"{idx:<{no_width}}"
+                )
                 st_colored = f"{status_col}{st:<2}{colors.RESET}"
                 name_colored = f"{status_col}{name}{colors.RESET}"
                 focus_col = f"{colors.CYAN}{focus_marker}{colors.RESET}" if idx == focus_idx else " "
                 trk_colored = f"{colors.ORANGE}{trk}{colors.RESET}"
                 cat_colored = f"{colors.PURPLE}{cat}{colors.RESET}"
                 if sp_width:
-                    line = f"{focus_col} {idx:<{no_width}} {st_colored} {name_colored} {nohl_val:<1} {sp_val} {trk_colored} {cat_colored} {added_short} {pct}"
+                    line = f"{focus_col} {no_colored} {st_colored} {name_colored} {nohl_val:<1} {sp_val} {trk_colored} {cat_colored} {added_short} {pct}"
                 else:
-                    line = f"{focus_col} {idx:<{no_width}} {st_colored} {name_colored} {trk_colored} {cat_colored} {added_short} {pct}"
+                    line = f"{focus_col} {no_colored} {st_colored} {name_colored} {trk_colored} {cat_colored} {added_short} {pct}"
                 if visible_len(line) > content_width_local:
                     line = truncate(line, content_width_local)
                 else:
@@ -4271,7 +4326,7 @@ def main() -> int:
                                 trackers = _rt_client.fetch_trackers(_tab_rt_proxy, selection_hash)
                             else:
                                 trackers = fetch_trackers(opener, api_url, selection_hash)
-                            content_lines = render_trackers_lines(trackers, tab_width)
+                            content_lines = render_trackers_lines(trackers, tab_width, selected_row)
                         elif active_label == "Content":
                             if _tab_rt_proxy is not None:
                                 files = _rt_client.fetch_files(_tab_rt_proxy, selection_hash)
