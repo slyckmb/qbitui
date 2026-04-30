@@ -60,8 +60,8 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.5.7"
-LAST_UPDATED = "2026-04-24"
+VERSION = "2.6.0"
+LAST_UPDATED = "2026-04-30"
 FULL_TUI_MIN_WIDTH = 120
 
 # ============================================================================
@@ -274,8 +274,10 @@ STATE_COMPLETED = {item["api"] for item in STATUS_MAPPING if item["group"] == "c
 API_TERM_MAP = {item["api"].lower(): item["api"] for item in STATUS_MAPPING}
 
 SPECIAL_STATUS_FILTERS = {
+    "ti",
     "tracker_issue",
     "trk_warn",
+    "nt",
     "no_working_tracker",
     "tracker_no_working",
 }
@@ -2432,9 +2434,9 @@ def apply_filters(rows: list[dict], filters: list[dict]) -> list[dict]:
                 present = raw_state in target_states
                 if not present and special_terms:
                     present = (
-                        (bool(special_terms & {"tracker_issue", "trk_warn"}) and row_has_tracker_issue(r))
+                        (bool(special_terms & {"ti", "tracker_issue", "trk_warn"}) and row_has_tracker_issue(r))
                         or (
-                            bool(special_terms & {"no_working_tracker", "tracker_no_working"})
+                            bool(special_terms & {"nt", "no_working_tracker", "tracker_no_working"})
                             and row_has_no_working_tracker(r)
                         )
                     )
@@ -4492,7 +4494,7 @@ def main() -> int:
 
                     help_lines.append(f"\n{colors.CYAN_BOLD}FILTER REFERENCE{colors.RESET}")
                     help_lines.append(f"{colors.YELLOW}f  Status:{colors.RESET}   Groups: downloading  seeding  paused  completed  error  checking  all")
-                    help_lines.append(f"             Tracker: tracker_issue  no_working_tracker")
+                    help_lines.append(f"             Tracker: tracker_issue (ti)  no_working_tracker (nt)")
                     help_lines.append(f"             Comma-list for multiple: seeding,paused")
                     help_lines.append(f"             Prefix ! to exclude:    !completed")
                     help_lines.append(f"{colors.YELLOW}c  Category:{colors.RESET} Exact category name  (case-insensitive)")
@@ -4868,7 +4870,7 @@ def main() -> int:
                     _cur = ", ".join(current_status_filter_values) if current_status_filter_values else "none"
                     val = read_line(
                         f"Status  (downloading  seeding  paused  completed  error  checking  all"
-                        f"  tracker_issue  no_working_tracker"
+                        f"  tracker_issue/ti  no_working_tracker/nt"
                         f"  comma-list  !term=exclude  -=clear  blank=no change)  current={_cur}: "
                     ).strip()
                     if val == "-":

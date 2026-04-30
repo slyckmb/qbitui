@@ -173,8 +173,10 @@ def test_status_filter_tracker_issue_matches_rt_tracker_message():
 
 def test_special_status_terms_are_valid_for_interactive_prompt_filtering():
     assert "tracker_issue" in qbit_dashboard.STATUS_FILTER_TERMS
+    assert "ti" in qbit_dashboard.STATUS_FILTER_TERMS
     assert "trk_warn" in qbit_dashboard.STATUS_FILTER_TERMS
     assert "no_working_tracker" in qbit_dashboard.STATUS_FILTER_TERMS
+    assert "nt" in qbit_dashboard.STATUS_FILTER_TERMS
     assert "tracker_no_working" in qbit_dashboard.STATUS_FILTER_TERMS
 
 
@@ -190,6 +192,24 @@ def test_status_filter_tracker_issue_matches_qbit_manage_issue_tag():
     )
 
     assert [row["name"] for row in filtered] == ["qbit tagged"]
+
+
+def test_status_filter_ti_alias_matches_tracker_issue():
+    rows = [
+        {
+            "name": "rt warning",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "message": "Tracker: [Timeout was reached]"},
+        },
+        {"name": "normal", "state": "stalledUP", "raw": {"state": "stalledUP", "message": ""}},
+    ]
+
+    filtered = qbit_dashboard.apply_filters(
+        rows,
+        [{"type": "status", "values": ["ti"], "enabled": True}],
+    )
+
+    assert [row["name"] for row in filtered] == ["rt warning"]
 
 
 def test_status_filter_no_working_tracker_matches_rt_tracker_counts():
@@ -209,6 +229,28 @@ def test_status_filter_no_working_tracker_matches_rt_tracker_counts():
     filtered = qbit_dashboard.apply_filters(
         rows,
         [{"type": "status", "values": ["no_working_tracker"], "enabled": True}],
+    )
+
+    assert [row["name"] for row in filtered] == ["zero usable trackers"]
+
+
+def test_status_filter_nt_alias_matches_no_working_tracker():
+    rows = [
+        {
+            "name": "zero usable trackers",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "trackers_count": 2, "real_trackers_count": 0},
+        },
+        {
+            "name": "has usable tracker",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "trackers_count": 2, "real_trackers_count": 1},
+        },
+    ]
+
+    filtered = qbit_dashboard.apply_filters(
+        rows,
+        [{"type": "status", "values": ["nt"], "enabled": True}],
     )
 
     assert [row["name"] for row in filtered] == ["zero usable trackers"]
