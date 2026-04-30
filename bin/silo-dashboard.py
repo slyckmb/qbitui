@@ -28,7 +28,7 @@ from pathlib import Path
 from http.cookiejar import CookieJar
 from typing import Optional
 
-from qb_cache_lib import DEFAULT_QB_CACHE_BASE as DEFAULT_HASHALL_CACHE_BASE
+from qb_cache_lib import DEFAULT_QB_CACHE_BASE
 
 try:
     import yaml  # type: ignore
@@ -3112,13 +3112,13 @@ def main() -> int:
     parser.add_argument("--debug-keys", help="Write raw key sequences to a file (TTY only).")
     parser.add_argument("--color-theme", type=Path, metavar='PATH', help='Path to YAML color theme file (overrides default colors)')
     # Shared cache flags
-    parser.add_argument("--use-shared-cache", action=argparse.BooleanOptionalAction, default=True, help="Use qbit-cache-agent for list polling instead of direct API calls (default: true).")
+    parser.add_argument("--use-shared-cache", action=argparse.BooleanOptionalAction, default=True, help="Use silo-cache-agent for list polling instead of direct API calls (default: true).")
     parser.add_argument("--cache-max-age", type=float, default=15.0, help="Max cache age in seconds (default: 15).")
     parser.add_argument("--cache-wait-fresh", type=float, default=5.0, help="Seconds to wait for fresh cache snapshot (default: 5).")
     parser.add_argument("--cache-allow-stale", action=argparse.BooleanOptionalAction, default=True, help="Allow stale cache fallback (default: true).")
     parser.add_argument("--cache-agent-cmd", type=Path, default=Path(__file__).with_name("silo-cache-agent.py"), help="Path to silo-cache-agent.py (default: bin/silo-cache-agent.py alongside this script).")
     parser.add_argument("--cache-status", action="store_true", help="Print cache/daemon status JSON and exit (requires --use-shared-cache).")
-    parser.add_argument("--cache-base-dir", type=Path, default=DEFAULT_HASHALL_CACHE_BASE, help="Shared cache base directory (default: ~/.cache/hashall-qb).")
+    parser.add_argument("--cache-base-dir", type=Path, default=DEFAULT_QB_CACHE_BASE, help="Shared cache base directory (default: ~/.cache/silo-qb).")
     parser.add_argument("--cache-no-daemon", action="store_true", help="Never ping or spawn the cache daemon; read cache file directly only. Useful for read-only monitoring sessions.")
     parser.add_argument("--fast-refresh-interval", type=float, default=0, metavar="SECS",
                         help="Interval in seconds for fast direct-API refresh of visible rows (0 = disabled, default: 0). Use Shift+R in TUI to set interactively.")

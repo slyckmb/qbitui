@@ -20,9 +20,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
-DEFAULT_QB_CACHE_BASE = Path.home() / ".cache" / "hashall-qb"  # keep same dir; shared with hashall readers
+DEFAULT_QB_CACHE_BASE = Path.home() / ".cache" / "silo-qb"
+LEGACY_QB_CACHE_BASE = Path.home() / ".cache" / "hashall-qb"
 
 # Resolve qB daemon path at import time via silo_cache_common discovery chain.
 # Falls back gracefully if silo_cache_common is not importable (standalone use).
@@ -166,6 +167,12 @@ def _status_payload(*, cache_file: Path, meta_file: Path, lease_dir: Path, pid_f
         "active_leases": active,
         "meta": meta,
     }
+
+
+def _legacy_cache_pair(cache_file: Path, meta_file: Path) -> Tuple[Path, Path]:
+    if cache_file == DEFAULT_QB_CACHE_BASE / "torrents-info.json":
+        return LEGACY_QB_CACHE_BASE / "torrents-info.json", LEGACY_QB_CACHE_BASE / "torrents-info.meta.json"
+    return cache_file, meta_file
 
 
 def _fetch_torrents_snapshot(
@@ -357,9 +364,16 @@ def agent_main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     def _load_cache_and_meta() -> Tuple[str, dict, Optional[float]]:
-        meta = _read_json(meta_file)
+        read_cache_file = cache_file
+        read_meta_file = meta_file
+        if not read_cache_file.exists():
+            legacy_cache_file, legacy_meta_file = _legacy_cache_pair(cache_file, meta_file)
+            if legacy_cache_file != cache_file and legacy_cache_file.exists():
+                read_cache_file = legacy_cache_file
+                read_meta_file = legacy_meta_file
+        meta = _read_json(read_meta_file)
         age = _cache_age_seconds(meta, time.time())
-        text = cache_file.read_text(encoding="utf-8") if cache_file.exists() else ""
+        text = read_cache_file.read_text(encoding="utf-8") if read_cache_file.exists() else ""
         return text, meta, age
 
     text, _meta, age = _load_cache_and_meta()

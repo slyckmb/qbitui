@@ -30,7 +30,7 @@ def test_fetch_torrents_info_payload_uses_cache_when_available(monkeypatch):
 
     raw, used_cache, used_direct, error = qbit_dashboard.fetch_torrents_info_payload(
         use_shared_cache=True,
-        cache_agent_cmd=Path("/tmp/qbit-cache-agent.py"),
+        cache_agent_cmd=Path("/tmp/silo-cache-agent.py"),
         cache_max_age=15.0,
         cache_wait_fresh=5.0,
         cache_allow_stale=True,
@@ -54,7 +54,7 @@ def test_fetch_torrents_info_payload_does_not_fallback_direct_on_cache_failure(m
 
     raw, used_cache, used_direct, error = qbit_dashboard.fetch_torrents_info_payload(
         use_shared_cache=True,
-        cache_agent_cmd=Path("/tmp/qbit-cache-agent.py"),
+        cache_agent_cmd=Path("/tmp/silo-cache-agent.py"),
         cache_max_age=15.0,
         cache_wait_fresh=5.0,
         cache_allow_stale=True,
@@ -78,7 +78,7 @@ def test_fetch_torrents_info_payload_uses_direct_mode_only_when_explicit(monkeyp
 
     raw, used_cache, used_direct, error = qbit_dashboard.fetch_torrents_info_payload(
         use_shared_cache=False,
-        cache_agent_cmd=Path("/tmp/qbit-cache-agent.py"),
+        cache_agent_cmd=Path("/tmp/silo-cache-agent.py"),
         cache_max_age=15.0,
         cache_wait_fresh=5.0,
         cache_allow_stale=True,
