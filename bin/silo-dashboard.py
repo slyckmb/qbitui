@@ -833,13 +833,14 @@ def row_has_tracker_issue(row: dict) -> bool:
 
 def row_has_no_working_tracker(row: dict) -> bool:
     raw = row.get("raw") or {}
-    try:
-        tracker_count = int(raw.get("trackers_count") or 0)
-        working_count = int(raw.get("real_trackers_count") or 0)
-    except Exception:
-        tracker_count = working_count = 0
-    if tracker_count > 0:
-        return working_count == 0
+    if "trackers_count" in raw and "real_trackers_count" in raw:
+        try:
+            tracker_count = int(raw.get("trackers_count") or 0)
+            working_count = int(raw.get("real_trackers_count") or 0)
+        except Exception:
+            tracker_count = working_count = 0
+        if tracker_count > 0:
+            return working_count == 0
 
     trackers = raw.get("trackers") or []
     if not isinstance(trackers, list) or not trackers:

@@ -254,3 +254,25 @@ def test_status_filter_nt_alias_matches_no_working_tracker():
     )
 
     assert [row["name"] for row in filtered] == ["zero usable trackers"]
+
+
+def test_status_filter_no_working_tracker_ignores_unknown_qbit_tracker_health():
+    rows = [
+        {
+            "name": "qbit unknown tracker health",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "trackers_count": 2},
+        },
+        {
+            "name": "known zero usable trackers",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "trackers_count": 2, "real_trackers_count": 0},
+        },
+    ]
+
+    filtered = qbit_dashboard.apply_filters(
+        rows,
+        [{"type": "status", "values": ["nt"], "enabled": True}],
+    )
+
+    assert [row["name"] for row in filtered] == ["known zero usable trackers"]
