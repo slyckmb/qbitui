@@ -275,7 +275,7 @@ def test_trackers_tab_includes_tracker_issue_banner():
     ]
 
 
-def test_cache_status_line_uses_full_client_and_cache_source():
+def test_cache_status_line_omits_repeated_client_and_source_badge():
     colors = qbit_dashboard.ColorScheme()
     line = qbit_dashboard._fmt_cache_status_line(
         {
@@ -292,8 +292,9 @@ def test_cache_status_line_uses_full_client_and_cache_source():
     )
     plain = qbit_dashboard.ANSI_RE.sub("", line)
 
-    assert "Client: rTorrent" in plain
-    assert "Source: CACHE" in plain
+    assert plain.startswith("Cache:")
+    assert "Client:" not in plain
+    assert "Source:" not in plain
 
 
 def test_minimal_header_includes_sa_line():
@@ -329,9 +330,10 @@ def test_minimal_header_includes_sa_line():
 
     assert "Client: rTorrent" in plain[0]
     assert "Source: CACHE" in plain[0]
-    assert "Scope: ALL" in plain[1]
+    assert "ALL" in plain[1]
     assert "ti 1" in plain[1]
     assert "hit 100%" in plain[1]
+    assert "U~" not in plain[1]
 
 
 def test_status_filter_no_working_tracker_matches_rt_tracker_counts():
