@@ -9,11 +9,9 @@ slots:
   '2':
   - type: status
     values:
-    - u
-    - su
-    - pu
+    - ti
     enabled: true
-    negate: true
+    negate: false
   '9':
   - type: status
     values:
