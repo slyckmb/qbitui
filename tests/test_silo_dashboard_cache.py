@@ -30,7 +30,7 @@ def test_fetch_torrents_info_payload_uses_cache_when_available(monkeypatch):
 
     raw, used_cache, used_direct, error = qbit_dashboard.fetch_torrents_info_payload(
         use_shared_cache=True,
-        cache_agent_cmd=Path("/tmp/qbit-cache-agent.py"),
+        cache_agent_cmd=Path("/tmp/silo-cache-agent.py"),
         cache_max_age=15.0,
         cache_wait_fresh=5.0,
         cache_allow_stale=True,
@@ -54,7 +54,7 @@ def test_fetch_torrents_info_payload_does_not_fallback_direct_on_cache_failure(m
 
     raw, used_cache, used_direct, error = qbit_dashboard.fetch_torrents_info_payload(
         use_shared_cache=True,
-        cache_agent_cmd=Path("/tmp/qbit-cache-agent.py"),
+        cache_agent_cmd=Path("/tmp/silo-cache-agent.py"),
         cache_max_age=15.0,
         cache_wait_fresh=5.0,
         cache_allow_stale=True,
@@ -78,7 +78,7 @@ def test_fetch_torrents_info_payload_uses_direct_mode_only_when_explicit(monkeyp
 
     raw, used_cache, used_direct, error = qbit_dashboard.fetch_torrents_info_payload(
         use_shared_cache=False,
-        cache_agent_cmd=Path("/tmp/qbit-cache-agent.py"),
+        cache_agent_cmd=Path("/tmp/silo-cache-agent.py"),
         cache_max_age=15.0,
         cache_wait_fresh=5.0,
         cache_allow_stale=True,
@@ -125,7 +125,7 @@ def test_build_rows_prefers_registry_match_over_hostname_fallback():
             }
         ],
         {},
-        {r"tracker\\.example": "ExampleTracker"},
+        {r"tracker\.example": "ExampleTracker"},
     )
 
     assert rows[0]["tracker"] == "ExampleTracker"
@@ -143,3 +143,260 @@ def test_find_tracker_registry_resolves_sibling_traktor_from_worktree(monkeypatc
     monkeypatch.setattr(qbit_dashboard, "__file__", str(worktree_bin / "silo-dashboard.py"))
 
     assert qbit_dashboard._find_tracker_registry() == registry
+
+
+def test_status_filter_tracker_issue_matches_rt_tracker_message():
+    rows = [
+        {
+            "name": "seeding with tracker warning",
+            "state": "stalledUP",
+            "raw": {
+                "state": "stalledUP",
+                "message": 'Tracker: [Failure reason "Torrent has been deleted."]',
+            },
+        },
+        {
+            "name": "fatal incomplete",
+            "state": "error",
+            "raw": {"state": "error", "message": "Tracker: [Could not connect to server]"},
+        },
+        {"name": "plain seeding", "state": "stalledUP", "raw": {"state": "stalledUP"}},
+    ]
+
+    filtered = qbit_dashboard.apply_filters(
+        rows,
+        [{"type": "status", "values": ["tracker_issue"], "enabled": True}],
+    )
+
+    assert [row["name"] for row in filtered] == ["seeding with tracker warning"]
+
+
+def test_special_status_terms_are_valid_for_interactive_prompt_filtering():
+    assert "tracker_issue" in qbit_dashboard.STATUS_FILTER_TERMS
+    assert "ti" in qbit_dashboard.STATUS_FILTER_TERMS
+    assert "trk_warn" in qbit_dashboard.STATUS_FILTER_TERMS
+    assert "no_working_tracker" in qbit_dashboard.STATUS_FILTER_TERMS
+    assert "nt" in qbit_dashboard.STATUS_FILTER_TERMS
+    assert "tracker_no_working" in qbit_dashboard.STATUS_FILTER_TERMS
+
+
+def test_status_filter_tracker_issue_matches_qbit_manage_issue_tag():
+    rows = [
+        {"name": "qbit tagged", "state": "uploading", "tags": "~issue, tracker", "raw": {"state": "uploading"}},
+        {"name": "qbit clean", "state": "uploading", "tags": "tracker", "raw": {"state": "uploading"}},
+    ]
+
+    filtered = qbit_dashboard.apply_filters(
+        rows,
+        [{"type": "status", "values": ["tracker_issue"], "enabled": True}],
+    )
+
+    assert [row["name"] for row in filtered] == ["qbit tagged"]
+
+
+def test_status_filter_ti_alias_matches_tracker_issue():
+    rows = [
+        {
+            "name": "rt warning",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "message": "Tracker: [Timeout was reached]"},
+        },
+        {"name": "normal", "state": "stalledUP", "raw": {"state": "stalledUP", "message": ""}},
+    ]
+
+    filtered = qbit_dashboard.apply_filters(
+        rows,
+        [{"type": "status", "values": ["ti"], "enabled": True}],
+    )
+
+    assert [row["name"] for row in filtered] == ["rt warning"]
+
+
+def test_tracker_issue_summary_reports_rt_message():
+    row = {
+        "name": "rt warning",
+        "tracker": "privatehd",
+        "state": "stalledUP",
+        "raw": {
+            "state": "stalledUP",
+            "tracker": "https://tracker.example/announce",
+            "message": 'Tracker: [Failure reason "Torrent not found"]',
+        },
+    }
+
+    summary = qbit_dashboard.tracker_issue_summary(row)
+
+    assert summary["type"] == "tracker_issue"
+    assert summary["source"] == "rtorrent_message"
+    assert summary["tracker"] == "privatehd"
+    assert summary["message"] == 'Tracker: [Failure reason "Torrent not found"]'
+
+
+def test_info_tab_includes_tracker_issue_message():
+    row = {
+        "name": "rt warning",
+        "state": "stalledUP",
+        "category": "-",
+        "tags": "-",
+        "size": "1 GiB",
+        "progress": "100%",
+        "ratio": "1.0",
+        "dlspeed": "0 B/s",
+        "upspeed": "0 B/s",
+        "eta": "-",
+        "hash": "abc",
+        "tracker": "privatehd",
+        "raw": {"state": "stalledUP", "message": "Tracker: [Timeout was reached]"},
+    }
+
+    lines = qbit_dashboard.render_info_lines(row, 100)
+
+    assert "Tracker issue:" in lines
+    assert "Type: tracker_issue" in lines
+    assert "Source: rtorrent_message" in lines
+    assert "Message: Tracker: [Timeout was reached]" in lines
+
+
+def test_trackers_tab_includes_tracker_issue_banner():
+    row = {
+        "state": "stalledUP",
+        "tracker": "privatehd",
+        "raw": {"state": "stalledUP", "message": "Tracker: [Timeout was reached]"},
+    }
+    trackers = [{"status": "working", "tier": "0", "url": "https://tracker.example/announce"}]
+
+    lines = qbit_dashboard.render_trackers_lines(trackers, 100, row)
+
+    assert lines[:4] == [
+        "Tracker issue:",
+        "  Type: tracker_issue",
+        "  Source: rtorrent_message",
+        "  Message: Tracker: [Timeout was reached]",
+    ]
+
+
+def test_cache_status_line_omits_repeated_client_and_source_badge():
+    colors = qbit_dashboard.ColorScheme()
+    line = qbit_dashboard._fmt_cache_status_line(
+        {
+            "enabled": True,
+            "client_label": "rt",
+            "base_path": "/home/michael/.cache/silo-rt",
+            "interval_s": 30,
+            "cache_age_s": 1,
+            "cache_hits": 3,
+            "direct_hits": 0,
+            "items": 10,
+        },
+        colors,
+    )
+    plain = qbit_dashboard.ANSI_RE.sub("", line)
+
+    assert plain.startswith("Cache:")
+    assert "Client:" not in plain
+    assert "Source:" not in plain
+
+
+def test_minimal_header_includes_sa_line():
+    colors = qbit_dashboard.ColorScheme()
+    rows = [
+        {
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "message": "Tracker: [Timeout]"},
+        }
+    ]
+
+    lines = qbit_dashboard.draw_header_minimal(
+        colors=colors,
+        version="2.8.0",
+        scope="all",
+        page=0,
+        total_pages=1,
+        width=140,
+        cache_info={
+            "enabled": True,
+            "client_label": "rt",
+            "cache_age_s": 2,
+            "items": 1,
+            "cache_hits": 1,
+            "direct_hits": 0,
+        },
+        torrents=rows,
+        sort_field="added_on",
+        sort_desc=True,
+        filters=[],
+    )
+    plain = [qbit_dashboard.ANSI_RE.sub("", line) for line in lines]
+
+    assert "Client: rTorrent" in plain[0]
+    assert "Source: CACHE" in plain[0]
+    assert "ALL" in plain[1]
+    assert "ti 1" in plain[1]
+    assert "hit 100%" in plain[1]
+    assert "U~" not in plain[1]
+
+
+def test_status_filter_no_working_tracker_matches_rt_tracker_counts():
+    rows = [
+        {
+            "name": "zero usable trackers",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "trackers_count": 2, "real_trackers_count": 0},
+        },
+        {
+            "name": "has usable tracker",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "trackers_count": 2, "real_trackers_count": 1},
+        },
+    ]
+
+    filtered = qbit_dashboard.apply_filters(
+        rows,
+        [{"type": "status", "values": ["no_working_tracker"], "enabled": True}],
+    )
+
+    assert [row["name"] for row in filtered] == ["zero usable trackers"]
+
+
+def test_status_filter_nt_alias_matches_no_working_tracker():
+    rows = [
+        {
+            "name": "zero usable trackers",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "trackers_count": 2, "real_trackers_count": 0},
+        },
+        {
+            "name": "has usable tracker",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "trackers_count": 2, "real_trackers_count": 1},
+        },
+    ]
+
+    filtered = qbit_dashboard.apply_filters(
+        rows,
+        [{"type": "status", "values": ["nt"], "enabled": True}],
+    )
+
+    assert [row["name"] for row in filtered] == ["zero usable trackers"]
+
+
+def test_status_filter_no_working_tracker_ignores_unknown_qbit_tracker_health():
+    rows = [
+        {
+            "name": "qbit unknown tracker health",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "trackers_count": 2},
+        },
+        {
+            "name": "known zero usable trackers",
+            "state": "stalledUP",
+            "raw": {"state": "stalledUP", "trackers_count": 2, "real_trackers_count": 0},
+        },
+    ]
+
+    filtered = qbit_dashboard.apply_filters(
+        rows,
+        [{"type": "status", "values": ["nt"], "enabled": True}],
+    )
+
+    assert [row["name"] for row in filtered] == ["known zero usable trackers"]

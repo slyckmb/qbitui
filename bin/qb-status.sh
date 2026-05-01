@@ -2,7 +2,7 @@
 # Version: 1.4.0
 set -euo pipefail
 
-SCRIPT_VERSION="1.4.0"
+SCRIPT_VERSION="1.5.0"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QBIT_URL="${QBIT_URL:-http://localhost:9003}"
 QBIT_USER="${QBIT_USER:-${QBITTORRENTAPI_USERNAME:-admin}}"
@@ -15,7 +15,8 @@ DASHBOARD=0
 USE_CACHE=1
 CACHE_MAX_AGE=30
 CACHE_AGENT="${QBIT_CACHE_AGENT:-${SILO_CACHE_AGENT:-/home/michael/dev/tools/silo/bin/silo-cache-agent.py}}"
-CACHE_FILE_FALLBACK="${QBIT_CACHE_FALLBACK_FILE:-$HOME/.cache/hashall-qb/torrents-info.json}"
+CACHE_FILE_FALLBACK="${QBIT_CACHE_FALLBACK_FILE:-$HOME/.cache/silo-qb/torrents-info.json}"
+LEGACY_CACHE_FILE_FALLBACK="$HOME/.cache/hashall-qb/torrents-info.json"
 CACHE_CLIENT_ID="$(basename "$0"):$$"
 CACHE_PYTHON="${QBIT_CACHE_PYTHON:-}"
 
@@ -146,9 +147,13 @@ CACHE_PYTHON="$(resolve_cache_python)"
 
 load_cache_file_fallback() {
   local max_age="$1"
-  local now epoch age raw
-  [[ -f "$CACHE_FILE_FALLBACK" ]] || return 1
-  epoch="$(stat -c '%Y' "$CACHE_FILE_FALLBACK" 2>/dev/null || true)"
+  local now epoch age raw cache_file
+  cache_file="$CACHE_FILE_FALLBACK"
+  if [[ ! -f "$cache_file" && -f "$LEGACY_CACHE_FILE_FALLBACK" ]]; then
+    cache_file="$LEGACY_CACHE_FILE_FALLBACK"
+  fi
+  [[ -f "$cache_file" ]] || return 1
+  epoch="$(stat -c '%Y' "$cache_file" 2>/dev/null || true)"
   [[ -n "$epoch" && "$epoch" =~ ^[0-9]+$ ]] || return 1
   now="$(date +%s)"
   age=$((now - epoch))
@@ -156,7 +161,7 @@ load_cache_file_fallback() {
   if (( max_age > 0 && age > max_age )); then
     return 1
   fi
-  raw="$(<"$CACHE_FILE_FALLBACK")"
+  raw="$(<"$cache_file")"
   jq -e . >/dev/null 2>&1 <<<"$raw" || return 1
   printf '%s' "$raw"
 }

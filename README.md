@@ -69,19 +69,16 @@ ln -s "$PWD/bin/silo-dashboard.py" ~/.local/bin/silo
 
 ## Shared Cache Mode
 
-silo now uses `hashall` as the canonical shared qB cache implementation.
-The local `bin/silo-cache-agent.py` and `bin/silo-cache-daemon.py` scripts are
-thin wrappers so silo can share the same qB compatibility and cache contract
-without maintaining a second daemon/client implementation.
+silo owns the canonical shared qB cache implementation. The local
+`bin/silo-cache-agent.py` and `bin/silo-cache-daemon.py` scripts are thin
+entry-point wrappers around silo's `qb_cache_lib.py`.
 
 ### How it works
 
-- `hashall` owns the actual daemon/client logic and qB version normalization.
-- silo calls the local wrapper scripts, which delegate to hashall's cache
-  agent and daemon.
-- The shared cache lives at `~/.cache/hashall-qb/` by default.
-- The wrappers expect a local `hashall` checkout at
-  `/home/michael/dev/work/hashall`, or a `HASHALL_ROOT` override.
+- silo owns the actual daemon/client logic and qB version normalization.
+- The shared cache lives at `~/.cache/silo-qb/` by default.
+- `~/.cache/hashall-qb/` is still accepted as a read fallback when the new
+  silo cache is absent, to ease cross-repo migration.
 - The dashboard calls the agent subprocess instead of hitting the API directly
   when `--use-shared-cache` is enabled.
 - If cache reads fail in shared-cache mode, the dashboard keeps its current
@@ -115,10 +112,8 @@ and last fetch metadata. Useful for diagnosing stale cache or daemon startup iss
 
 ### Migration notes
 
-**Cross-repo cache alignment** (v1.13.0): silo no longer maintains its own qB
-cache implementation. The local cache scripts now delegate to hashall's shared
-cache tooling so qB version handling and cache behavior live in one place.
-The default cache directory is `~/.cache/hashall-qb/`.
+**Silo-owned cache path**: silo's qB cache now writes to `~/.cache/silo-qb/`.
+The old `~/.cache/hashall-qb/` path is a compatibility read fallback only.
 
 ## rTorrent Daemon Discovery
 

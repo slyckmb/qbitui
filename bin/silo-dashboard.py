@@ -28,7 +28,7 @@ from pathlib import Path
 from http.cookiejar import CookieJar
 from typing import Optional
 
-from qb_cache_lib import DEFAULT_QB_CACHE_BASE as DEFAULT_HASHALL_CACHE_BASE
+from qb_cache_lib import DEFAULT_QB_CACHE_BASE
 
 try:
     import yaml  # type: ignore
@@ -60,8 +60,8 @@ except ImportError:
     _CC_AVAILABLE = False
 
 SCRIPT_NAME = "silo-dashboard"
-VERSION = "2.5.7"
-LAST_UPDATED = "2026-04-24"
+VERSION = "2.8.1"
+LAST_UPDATED = "2026-04-30"
 FULL_TUI_MIN_WIDTH = 120
 
 # ============================================================================
@@ -273,6 +273,15 @@ STATE_COMPLETED = {item["api"] for item in STATUS_MAPPING if item["group"] == "c
 # Build lookup maps
 API_TERM_MAP = {item["api"].lower(): item["api"] for item in STATUS_MAPPING}
 
+SPECIAL_STATUS_FILTERS = {
+    "ti",
+    "tracker_issue",
+    "trk_warn",
+    "nt",
+    "no_working_tracker",
+    "tracker_no_working",
+}
+
 # Build filter map
 STATUS_FILTER_MAP = {
     "downloading": STATE_DOWNLOAD,
@@ -288,6 +297,12 @@ STATUS_FILTER_MAP = {
     "active": STATE_DOWNLOAD | STATE_UPLOAD,
     "inactive": STATE_PAUSED | STATE_STOPPED | {"stalledDL", "stalledUP"},
 }
+STATUS_FILTER_TERMS = (
+    set(STATUS_FILTER_MAP.keys())
+    | set(API_TERM_MAP.keys())
+    | {m["code"].lower() for m in STATUS_MAPPING}
+    | SPECIAL_STATUS_FILTERS
+)
 
 
 STASHED_KEY = ""
@@ -800,6 +815,74 @@ def state_group(state: str) -> str:
     return "other"
 
 
+def _row_tag_set(row: dict) -> set[str]:
+    raw_tags = row.get("tags") or row.get("raw", {}).get("tags") or ""
+    return {t.strip().lower() for t in str(raw_tags).split(",") if t.strip()}
+
+
+def row_has_tracker_issue(row: dict) -> bool:
+    raw = row.get("raw") or {}
+    state = str(row.get("state") or raw.get("state") or "").strip().lower()
+    message = str(row.get("message") or raw.get("message") or "").strip()
+    if message.startswith("Tracker:") and state != "error":
+        return True
+    # qbit_manage's default tracker-error tag is "issue"; local configs may
+    # use "~issue" to mark it as machine-managed.
+    return bool(_row_tag_set(row) & {"issue", "~issue", "tracker_issue"})
+
+
+def tracker_issue_summary(row: dict) -> dict[str, str]:
+    raw = row.get("raw") or {}
+    state = str(row.get("state") or raw.get("state") or "").strip().lower()
+    message = str(row.get("message") or raw.get("message") or "").strip()
+    if message.startswith("Tracker:") and state != "error":
+        tracker = str(row.get("tracker") or raw.get("tracker") or "-").strip() or "-"
+        return {
+            "type": "tracker_issue",
+            "source": "rtorrent_message",
+            "tracker": tracker,
+            "message": message,
+        }
+    tags = _row_tag_set(row)
+    issue_tags = sorted(tags & {"issue", "~issue", "tracker_issue"})
+    if issue_tags:
+        return {
+            "type": "tracker_issue",
+            "source": "tag",
+            "tracker": str(row.get("tracker") or raw.get("tracker") or "-").strip() or "-",
+            "message": f"qbit_manage tag(s): {', '.join(issue_tags)}",
+        }
+    return {}
+
+
+def row_has_no_working_tracker(row: dict) -> bool:
+    raw = row.get("raw") or {}
+    if "trackers_count" in raw and "real_trackers_count" in raw:
+        try:
+            tracker_count = int(raw.get("trackers_count") or 0)
+            working_count = int(raw.get("real_trackers_count") or 0)
+        except Exception:
+            tracker_count = working_count = 0
+        if tracker_count > 0:
+            return working_count == 0
+
+    trackers = raw.get("trackers") or []
+    if not isinstance(trackers, list) or not trackers:
+        return False
+    seen_announce = False
+    for tracker in trackers:
+        if not isinstance(tracker, dict):
+            continue
+        url = str(tracker.get("url") or "")
+        if url and not url.startswith(("http", "udp", "ws")):
+            continue
+        seen_announce = True
+        status = str(tracker.get("status") or "").strip().lower()
+        if status in {"working", "2"}:
+            return False
+    return seen_announce
+
+
 # Legacy wrapper functions - will be removed after migration
 # Note: These require colors to be initialized in main()
 def status_color(state: str, colors_instance=None) -> str:
@@ -1232,6 +1315,7 @@ def summary(torrents: list[dict]) -> str:
 
 def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
     """Compact one-line cache status for the header."""
+    client_label = cache_info.get("client_label", "qbit")
     if not cache_info.get("enabled"):
         return f"{colors.FG_TERTIARY}Cache: OFF (direct API){colors.RESET}"
     # Dot color encodes cache freshness: green=fresh, yellow=aging, red=stale, dim=unknown
@@ -1255,7 +1339,6 @@ def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
     age_str = f"age {float(age):.1f}s" if age is not None else "age ?"
     items = cache_info.get("items")
     items_str = f"  {colors.FG_TERTIARY}{items} items{colors.RESET}" if items is not None else ""
-    client_label = cache_info.get("client_label", "qbit")
     qb_profile = cache_info.get("qb_profile") or {}
     qb_app = str(qb_profile.get("app_version") or "").strip()
     qb_api = str(qb_profile.get("webapi_version") or "").strip()
@@ -1288,6 +1371,35 @@ def _fmt_cache_status_line(cache_info: dict, colors: ColorScheme) -> str:
         f"  {colors.FG_SECONDARY}hit {colors.GREEN}{hit_pct}{colors.RESET}"
         f"  {colors.FG_TERTIARY}{age_str}{colors.RESET}"
         f"{items_str}{leases_str}{qb_profile_str}{no_daemon_str}{err_str}"
+    )
+
+
+def _client_display_name(client_label: str) -> str:
+    return {
+        "qbit": "qBittorrent",
+        "rt": "rTorrent",
+        "sab": "SABnzbd",
+    }.get(str(client_label or "").lower(), str(client_label or "Client"))
+
+
+def _client_color(colors: ColorScheme, client_label: str) -> str:
+    return {
+        "qbit": colors.CYAN_BOLD,
+        "rt": colors.ORANGE_BOLD,
+        "sab": colors.PURPLE_BOLD,
+    }.get(str(client_label or "").lower(), colors.CYAN_BOLD)
+
+
+def _client_source_badge(cache_info: dict | None, colors: ColorScheme) -> str:
+    if not cache_info:
+        return ""
+    client_label = cache_info.get("client_label", "qbit")
+    client_name = _client_display_name(client_label)
+    source = "CACHE" if cache_info.get("enabled") else "DIRECT"
+    source_color = colors.GREEN_BOLD if source == "CACHE" else colors.ERROR_BOLD
+    return (
+        f"{colors.FG_SECONDARY}Client:{colors.RESET} {_client_color(colors, client_label)}{client_name}{colors.RESET}"
+        f"  {colors.FG_SECONDARY}Source:{colors.RESET} {source_color}{source}{colors.RESET}"
     )
 
 
@@ -1335,6 +1447,7 @@ def draw_header_full_compact(
 
     line1 = (
         f"{colors.CYAN_BOLD}SILO{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}  "
+        f"{_client_source_badge(cache_info, colors)}  "
         f"{colors.FG_SECONDARY}@ {colors.BLUE}{api_url}{colors.RESET}  "
         f"{colors.FG_SECONDARY}{datetime.now().strftime('%Y-%m-%d')}{colors.RESET}"
     )
@@ -1492,7 +1605,8 @@ def draw_header_v2(
 
     # Line 1: Title bar (ASCII chars for consistent width)
     left = f"{colors.CYAN_BOLD}* SILO{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}"
-    center = f"{colors.FG_SECONDARY}@ {colors.BLUE}{api_url}{colors.RESET}"
+    badge = _client_source_badge(cache_info, colors)
+    center = f"{badge}  {colors.FG_SECONDARY}@ {colors.BLUE}{api_url}{colors.RESET}" if badge else f"{colors.FG_SECONDARY}@ {colors.BLUE}{api_url}{colors.RESET}"
     right = f"{colors.FG_SECONDARY}{datetime.now().strftime('%Y-%m-%d')}{colors.RESET}"
 
     # Calculate spacing using visible_len (accounts for emoji width)
@@ -1581,10 +1695,20 @@ def draw_header_minimal(
     scope: str,
     page: int,
     total_pages: int,
-    width: int
+    width: int,
+    cache_info: dict | None = None,
+    torrents: list[dict] | None = None,
+    sort_field: str = "",
+    sort_desc: bool = True,
+    filters: list[dict] | None = None,
 ) -> list[str]:
+    torrents = torrents or []
+    filters = filters or []
     scope_display = scope.upper() if scope != "all" else "ALL"
-    left = f"{colors.CYAN_BOLD}SILO{colors.RESET} {colors.FG_SECONDARY}v{version} {scope_display}{colors.RESET}"
+    badge = _client_source_badge(cache_info, colors)
+    left = f"{colors.CYAN_BOLD}SILO{colors.RESET} {colors.FG_SECONDARY}v{version}{colors.RESET}"
+    if badge:
+        left = f"{left}  {badge}"
     right = f"{colors.FG_SECONDARY}Pg {page + 1}/{total_pages}{colors.RESET}"
 
     inner_width = max(1, width - 4)
@@ -1595,10 +1719,51 @@ def draw_header_minimal(
     else:
         line = truncate(base, inner_width)
 
-    return [
-        f"│ {line} │",
-        "─" * width,
-    ]
+    cache_line = ""
+    if cache_info:
+        age = cache_info.get("cache_age_s")
+        age_str = f"age {float(age):.0f}s" if age is not None else "age ?"
+        items = cache_info.get("items")
+        hits = cache_info.get("cache_hits", 0)
+        direct = cache_info.get("direct_hits", 0)
+        total = hits + direct
+        hit_pct = f"{(hits / total * 100):.0f}%" if total > 0 else "--"
+        ti_count = sum(1 for row in torrents if row_has_tracker_issue(row))
+        nt_count = sum(1 for row in torrents if row_has_no_working_tracker(row))
+        total_dl = sum((row.get("raw") or {}).get("dlspeed") or row.get("dlspeed") or 0 for row in torrents)
+        total_ul = sum((row.get("raw") or {}).get("upspeed") or row.get("upspeed") or 0 for row in torrents)
+        def _mib(value: int | float) -> str:
+            x = float(value or 0) / (1024 * 1024)
+            return f"{x:.1f}".rstrip("0").rstrip(".") or "0"
+        item_count = items if items is not None else len(torrents)
+        if width < 100:
+            cache_line = (
+                f"{colors.YELLOW_BOLD}{scope_display}{colors.RESET} "
+                f"{colors.YELLOW}{sort_field}{'↓' if sort_desc else '↑'}{colors.RESET} "
+                f"{colors.FG_SECONDARY}F:{len([f for f in filters if f.get('enabled', True)])}{colors.RESET} "
+                f"{colors.FG_SECONDARY}{age_str}{colors.RESET} "
+                f"{colors.FG_TERTIARY}i {item_count}{colors.RESET} "
+                f"{colors.ERROR_BOLD}ti {ti_count}{colors.RESET} {colors.YELLOW}nt {nt_count}{colors.RESET} "
+                f"{colors.CYAN}dl {_mib(total_dl)}{colors.RESET} {colors.BLUE}ul {_mib(total_ul)}{colors.RESET} "
+                f"{colors.GREEN}hit {hit_pct}{colors.RESET}"
+            )
+        else:
+            cache_line = (
+                f"{colors.FG_SECONDARY}Scope:{colors.RESET} {colors.YELLOW_BOLD}{scope_display}{colors.RESET}  "
+                f"{colors.FG_SECONDARY}Sort:{colors.RESET} {colors.YELLOW}{sort_field}{'↓' if sort_desc else '↑'}{colors.RESET}  "
+                f"{colors.FG_SECONDARY}Filters:{len([f for f in filters if f.get('enabled', True)])}{colors.RESET}  "
+                f"{colors.FG_SECONDARY}{age_str}{colors.RESET}  "
+                f"{colors.FG_TERTIARY}{item_count} items{colors.RESET}  "
+                f"{colors.ERROR_BOLD}ti {ti_count}{colors.RESET}  {colors.YELLOW}nt {nt_count}{colors.RESET}  "
+                f"{colors.CYAN}DL {_mib(total_dl)}{colors.RESET}  {colors.BLUE}UL {_mib(total_ul)}{colors.RESET}  "
+                f"{colors.GREEN}hit {hit_pct}{colors.RESET}"
+            )
+
+    out = [f"│ {line} │"]
+    if cache_line:
+        out.append(truncate(cache_line, width))
+    out.append("─" * width)
+    return out
 
 
 def draw_footer_v2(
@@ -2350,11 +2515,15 @@ def apply_filters(rows: list[dict], filters: list[dict]) -> list[dict]:
             filtered = [r for r in filtered if match_hash(r)]
         elif flt["type"] == "status":
             target_states = set()
+            special_terms = set()
             for status_term in flt["values"]:
                 if status_term == "all":
                     # If "all" is specified, include all possible states
                     target_states = {k.lower() for k in STATE_CODE.keys()}
                     break
+                if status_term in SPECIAL_STATUS_FILTERS:
+                    special_terms.add(status_term)
+                    continue
                 # Try to map status_term to one of the defined state groups or raw states
                 mapped_states = STATUS_FILTER_MAP.get(status_term)
                 if mapped_states:
@@ -2370,10 +2539,18 @@ def apply_filters(rows: list[dict], filters: list[dict]) -> list[dict]:
             def match_status(r):
                 raw_state = (r.get("raw", {}).get("state") or "").lower()
                 present = raw_state in target_states
+                if not present and special_terms:
+                    present = (
+                        (bool(special_terms & {"ti", "tracker_issue", "trk_warn"}) and row_has_tracker_issue(r))
+                        or (
+                            bool(special_terms & {"nt", "no_working_tracker", "tracker_no_working"})
+                            and row_has_no_working_tracker(r)
+                        )
+                    )
                 return not present if flt.get("negate") else present
             
             # Only apply filter if there are valid target states
-            if target_states:
+            if target_states or special_terms:
                 filtered = [r for r in filtered if match_status(r)]
     return filtered
 
@@ -2538,6 +2715,7 @@ def fetch_peers(opener: urllib.request.OpenerDirector, api_url: str, hash_value:
 
 def render_info_lines(item: dict, width: int) -> list[str]:
     raw = item.get("raw") or {}
+    tracker_issue = tracker_issue_summary(item)
     lines = [
         f"Name: {item.get('name')}",
         "-" * width,
@@ -2551,6 +2729,17 @@ def render_info_lines(item: dict, width: int) -> list[str]:
         f"ETA: {item.get('eta')}",
         f"Hash: {item.get('hash')}",
     ]
+    if tracker_issue:
+        lines.extend(
+            [
+                "-" * width,
+                "Tracker issue:",
+                f"  Type: {tracker_issue.get('type')}",
+                f"  Source: {tracker_issue.get('source')}",
+                f"  Tracker: {tracker_issue.get('tracker')}",
+                f"  Message: {tracker_issue.get('message')}",
+            ]
+        )
     # ── Paths block ───────────────────────────────────────────────────────────
     save_path = (raw.get("save_path") or "").rstrip("/").rstrip("\\")
     dl_path   = (raw.get("download_path") or "").rstrip("/").rstrip("\\")
@@ -2613,12 +2802,22 @@ def render_info_lines(item: dict, width: int) -> list[str]:
     return wrapped
 
 
-def render_trackers_lines(trackers: list[dict], width: int) -> list[str]:
+def render_trackers_lines(trackers: list[dict], width: int, item: dict | None = None) -> list[str]:
+    issue = tracker_issue_summary(item or {}) if item else {}
+    issue_lines: list[str] = []
+    if issue:
+        issue_lines = [
+            "Tracker issue:",
+            f"  Type: {issue.get('type')}",
+            f"  Source: {issue.get('source')}",
+            f"  Message: {issue.get('message')}",
+            "-" * width,
+        ]
     if not trackers:
-        return ["No trackers."]
+        return issue_lines + ["No trackers."]
     headers = ["Status", "Tier", "URL"]
     widths = [10, 6, max(20, width - 20)]
-    lines = []
+    lines = issue_lines
     lines.append(f"{headers[0]:<{widths[0]}} {headers[1]:<{widths[1]}} {headers[2]}")
     lines.append("-" * width)
     for row in trackers:
@@ -2995,13 +3194,13 @@ def main() -> int:
     parser.add_argument("--debug-keys", help="Write raw key sequences to a file (TTY only).")
     parser.add_argument("--color-theme", type=Path, metavar='PATH', help='Path to YAML color theme file (overrides default colors)')
     # Shared cache flags
-    parser.add_argument("--use-shared-cache", action=argparse.BooleanOptionalAction, default=True, help="Use qbit-cache-agent for list polling instead of direct API calls (default: true).")
+    parser.add_argument("--use-shared-cache", action=argparse.BooleanOptionalAction, default=True, help="Use silo-cache-agent for list polling instead of direct API calls (default: true).")
     parser.add_argument("--cache-max-age", type=float, default=15.0, help="Max cache age in seconds (default: 15).")
     parser.add_argument("--cache-wait-fresh", type=float, default=5.0, help="Seconds to wait for fresh cache snapshot (default: 5).")
     parser.add_argument("--cache-allow-stale", action=argparse.BooleanOptionalAction, default=True, help="Allow stale cache fallback (default: true).")
     parser.add_argument("--cache-agent-cmd", type=Path, default=Path(__file__).with_name("silo-cache-agent.py"), help="Path to silo-cache-agent.py (default: bin/silo-cache-agent.py alongside this script).")
     parser.add_argument("--cache-status", action="store_true", help="Print cache/daemon status JSON and exit (requires --use-shared-cache).")
-    parser.add_argument("--cache-base-dir", type=Path, default=DEFAULT_HASHALL_CACHE_BASE, help="Shared cache base directory (default: ~/.cache/hashall-qb).")
+    parser.add_argument("--cache-base-dir", type=Path, default=DEFAULT_QB_CACHE_BASE, help="Shared cache base directory (default: ~/.cache/silo-qb).")
     parser.add_argument("--cache-no-daemon", action="store_true", help="Never ping or spawn the cache daemon; read cache file directly only. Useful for read-only monitoring sessions.")
     parser.add_argument("--fast-refresh-interval", type=float, default=0, metavar="SECS",
                         help="Interval in seconds for fast direct-API refresh of visible rows (0 = disabled, default: 0). Use Shift+R in TUI to set interactively.")
@@ -3462,6 +3661,7 @@ def main() -> int:
             status_col = colors.status_color(item.get("state") or "")
             focus_marker = ">" if idx == focus_idx else " "
             raw = item.get("raw") or {}
+            has_tracker_issue = row_has_tracker_issue(item)
 
             hash_value = str(item.get("hash") or "")
             hash_display = hash_value if show_full_hash else hash_value[:6] or "-"
@@ -3499,6 +3699,8 @@ def main() -> int:
                     piece = cell(c, values[c])
                     if c == "f" and idx == focus_idx:
                         row_parts.append(f"{colors.CYAN}{piece}{colors.RESET}")
+                    elif c == "no" and has_tracker_issue:
+                        row_parts.append(f"{colors.ERROR_BOLD}{piece}{colors.RESET}")
                     elif c in ("st", "name"):
                         row_parts.append(f"{status_col}{piece}{colors.RESET}")
                     elif c == "trk":
@@ -3554,18 +3756,36 @@ def main() -> int:
 
     def build_narrow_list_block(page_rows_local: list[dict], content_width_local: int) -> list[str]:
         lines: list[str] = []
+
+        def fmt_scaled(value: int | float | None, scale: float) -> str:
+            try:
+                x = float(value or 0) / scale
+            except Exception:
+                x = 0.0
+            if x <= 0:
+                return "0"
+            if x >= 100:
+                return f"{x:,.0f}"
+            return f"{x:,.1f}".rstrip("0").rstrip(".")
+
         no_width = max(2, len(str(max(0, len(page_rows_local) - 1))))
         trk_width = min(12, 6 + max(0, content_width_local - 96) // 12)
         cat_width = min(16, 8 + max(0, content_width_local - 96) // 10)
-        sp_width = 6 if content_width_local >= 96 else 0
         added_width = 11
         pct_width = 4
-        reserved_width = 25 + no_width + trk_width + cat_width + (sp_width + 1 if sp_width else 0) + (2 if sp_width else 0)
+        size_width = 5
+        show_activity_cols = content_width_local >= 90
+        ul_width = 5 if show_activity_cols else 0
+        seed_width = 4 if show_activity_cols else 0
+        reserved_width = (
+            24 + no_width + trk_width + cat_width + size_width + added_width + pct_width
+            + (ul_width + seed_width + 2 if show_activity_cols else 0)
+        )
         name_width = max(1, content_width_local - reserved_width)
-        if sp_width:
-            narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Name':<{name_width}} {'~':<1} {'Sp':<{sp_width}} {'Trk':<{trk_width}} {'Cat':<{cat_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
+        if show_activity_cols:
+            narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Trk':<{trk_width}} {'Cat':<{cat_width}} {'Sz':>{size_width}} {'UL':>{ul_width}} {'Sd':>{seed_width}} {'Added':<{added_width}} {'%':>{pct_width}} {'Name':<{name_width}}"
         else:
-            narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Name':<{name_width}} {'Trk':<{trk_width}} {'Cat':<{cat_width}} {'Added':<{added_width}} {'%':>{pct_width}}"
+            narrow_header = f"{'F':<1} {'No':<{no_width}} {'ST':<2} {'Trk':<{trk_width}} {'Cat':<{cat_width}} {'Sz':>{size_width}} {'Added':<{added_width}} {'%':>{pct_width}} {'Name':<{name_width}}"
         narrow_divider = "-" * content_width_local
 
         lines.append(truncate(narrow_header, content_width_local))
@@ -3573,45 +3793,52 @@ def main() -> int:
 
         for idx, item in enumerate(page_rows_local, 0):
             selected = selection_hash == item.get("hash")
+            has_tracker_issue = row_has_tracker_issue(item)
             focus_marker = ">" if idx == focus_idx else " "
+            raw = item.get("raw") or {}
             st = str(item.get("st") or "?")
             name = truncate(str(item.get("name") or "-"), name_width).ljust(name_width)
-            nohl_val = str(item.get("nohl") or " ")
-            sp_val = truncate(str(item.get("save_path") or "-"), sp_width).ljust(sp_width) if sp_width else ""
             trk = truncate(str(item.get("tracker") or "-"), trk_width).ljust(trk_width)
             cat = truncate(str(item.get("category") or "-"), cat_width).ljust(cat_width)
+            size_txt = truncate(fmt_scaled(raw.get("size") or raw.get("total_size") or 0, 1024.0 ** 3), size_width).rjust(size_width)
+            ul_txt = truncate(fmt_scaled(raw.get("upspeed") or 0, 1024.0 ** 2), ul_width).rjust(ul_width) if show_activity_cols else ""
+            seed_txt = truncate(f"{int(item.get('seeds') or 0):,}", seed_width).rjust(seed_width) if show_activity_cols else ""
             added_short = str(item.get("added_short") or "-")[:added_width].ljust(added_width)
             pct_value = str(item.get("progress") or "-")
             pct = truncate(pct_value, pct_width).rjust(pct_width)
 
             if selected:
                 name_p = ANSI_RE.sub("", name).ljust(name_width)
-                sp_p  = ANSI_RE.sub("", sp_val).ljust(sp_width) if sp_width else ""
                 trk_p  = ANSI_RE.sub("", trk).ljust(trk_width)
                 cat_p  = ANSI_RE.sub("", cat).ljust(cat_width)
-                if sp_width:
+                if show_activity_cols:
                     row_plain = (
-                        f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {name_p} "
-                        f"{nohl_val:<1} {sp_p} {trk_p} {cat_p} {added_short} {pct}"
+                        f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {trk_p} {cat_p} "
+                        f"{size_txt} {ul_txt} {seed_txt} {added_short} {pct} {name_p}"
                     )
                 else:
                     row_plain = (
-                        f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {name_p} "
-                        f"{trk_p} {cat_p} {added_short} {pct}"
+                        f"{focus_marker:<1} {idx:<{no_width}} {st:<2} {trk_p} {cat_p} "
+                        f"{size_txt} {added_short} {pct} {name_p}"
                     )
                 row_plain = row_plain[:content_width_local].ljust(content_width_local)
                 lines.append(f"{colors.SELECTION}{row_plain}{colors.RESET}")
             else:
                 status_col = colors.status_color(item.get("state") or "")
+                no_colored = (
+                    f"{colors.ERROR_BOLD}{idx:<{no_width}}{colors.RESET}"
+                    if has_tracker_issue
+                    else f"{idx:<{no_width}}"
+                )
                 st_colored = f"{status_col}{st:<2}{colors.RESET}"
                 name_colored = f"{status_col}{name}{colors.RESET}"
                 focus_col = f"{colors.CYAN}{focus_marker}{colors.RESET}" if idx == focus_idx else " "
                 trk_colored = f"{colors.ORANGE}{trk}{colors.RESET}"
                 cat_colored = f"{colors.PURPLE}{cat}{colors.RESET}"
-                if sp_width:
-                    line = f"{focus_col} {idx:<{no_width}} {st_colored} {name_colored} {nohl_val:<1} {sp_val} {trk_colored} {cat_colored} {added_short} {pct}"
+                if show_activity_cols:
+                    line = f"{focus_col} {no_colored} {st_colored} {trk_colored} {cat_colored} {size_txt} {ul_txt} {seed_txt} {added_short} {pct} {name_colored}"
                 else:
-                    line = f"{focus_col} {idx:<{no_width}} {st_colored} {name_colored} {trk_colored} {cat_colored} {added_short} {pct}"
+                    line = f"{focus_col} {no_colored} {st_colored} {trk_colored} {cat_colored} {size_txt} {added_short} {pct} {name_colored}"
                 if visible_len(line) > content_width_local:
                     line = truncate(line, content_width_local)
                 else:
@@ -4200,7 +4427,7 @@ def main() -> int:
                                 trackers = _rt_client.fetch_trackers(_tab_rt_proxy, selection_hash)
                             else:
                                 trackers = fetch_trackers(opener, api_url, selection_hash)
-                            content_lines = render_trackers_lines(trackers, tab_width)
+                            content_lines = render_trackers_lines(trackers, tab_width, selected_row)
                         elif active_label == "Content":
                             if _tab_rt_proxy is not None:
                                 files = _rt_client.fetch_files(_tab_rt_proxy, selection_hash)
@@ -4234,17 +4461,35 @@ def main() -> int:
                     if not have_full_draw:
                         output_buffer = "\033[H\033[J" # Start with clear
                         if narrow_mode:
+                            if active_client == "rtorrent":
+                                _display_torrents = rt_cached_torrents
+                            elif active_client == "sabnzbd":
+                                _display_torrents = sab_cached_torrents
+                            else:
+                                _display_torrents = cached_torrents
                             header_lines = draw_header_minimal(
                                 colors=colors,
                                 version=VERSION,
                                 scope=scope,
                                 page=page,
                                 total_pages=total_pages,
-                                width=content_width
+                                width=content_width,
+                                cache_info=cache_info,
+                                torrents=_display_torrents,
+                                sort_field=sort_fields[sort_index],
+                                sort_desc=sort_desc,
+                                filters=filters,
                             )
                         else:
-                            _display_url = f"[rt] {rt_url}" if active_client == "rtorrent" else api_url
-                            _display_torrents = rt_cached_torrents if active_client == "rtorrent" else cached_torrents
+                            if active_client == "rtorrent":
+                                _display_url = f"[rt] {rt_url}"
+                                _display_torrents = rt_cached_torrents
+                            elif active_client == "sabnzbd":
+                                _display_url = f"[sab] {_sab_conn.api_url if _sab_conn else _sab_url}"
+                                _display_torrents = sab_cached_torrents
+                            else:
+                                _display_url = api_url
+                                _display_torrents = cached_torrents
                             header_lines = draw_header_full_compact(
                                 colors=colors,
                                 api_url=_display_url,
@@ -4424,6 +4669,7 @@ def main() -> int:
 
                     help_lines.append(f"\n{colors.CYAN_BOLD}FILTER REFERENCE{colors.RESET}")
                     help_lines.append(f"{colors.YELLOW}f  Status:{colors.RESET}   Groups: downloading  seeding  paused  completed  error  checking  all")
+                    help_lines.append(f"             Tracker: tracker_issue (ti)  no_working_tracker (nt)")
                     help_lines.append(f"             Comma-list for multiple: seeding,paused")
                     help_lines.append(f"             Prefix ! to exclude:    !completed")
                     help_lines.append(f"{colors.YELLOW}c  Category:{colors.RESET} Exact category name  (case-insensitive)")
@@ -4792,9 +5038,6 @@ def main() -> int:
                     tty.setraw(fd); have_full_draw = False; continue
                 if key == "f":
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                    all_status_groups = sorted(STATUS_FILTER_MAP.keys())
-                    all_api_terms = sorted(API_TERM_MAP.keys())
-                    all_status_codes = sorted(list(set(m["code"].lower() for m in STATUS_MAPPING)))
                     current_status_filter_values = []
                     for f in filters:
                         if f["type"] == "status" and f.get("enabled", True):
@@ -4802,6 +5045,7 @@ def main() -> int:
                     _cur = ", ".join(current_status_filter_values) if current_status_filter_values else "none"
                     val = read_line(
                         f"Status  (downloading  seeding  paused  completed  error  checking  all"
+                        f"  tracker_issue/ti  no_working_tracker/nt"
                         f"  comma-list  !term=exclude  -=clear  blank=no change)  current={_cur}: "
                     ).strip()
                     if val == "-":
@@ -4813,8 +5057,7 @@ def main() -> int:
                             negate = True
                             val = val[1:]
                         statuses = [s.strip().lower() for s in val.split(",") if s.strip()]
-                        valid_terms = set(all_status_groups) | set(all_api_terms) | set(all_status_codes)
-                        statuses = [s for s in statuses if s in valid_terms]
+                        statuses = [s for s in statuses if s in STATUS_FILTER_TERMS]
                         if statuses:
                             filters.append({"type": "status", "values": statuses, "enabled": True, "negate": negate})
                     tty.setraw(fd); have_full_draw = False; continue

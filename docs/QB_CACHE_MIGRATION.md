@@ -42,7 +42,7 @@ silo-managed daemon writes. The cross-repo shim layer is eliminated.
 ### Modified
 | File | Change |
 |---|---|
-| `bin/silo-dashboard.py` line 31 | `from silo_hashall_shared import DEFAULT_HASHALL_CACHE_BASE` → `from qb_cache_lib import DEFAULT_QB_CACHE_BASE as DEFAULT_HASHALL_CACHE_BASE` |
+| `bin/silo-dashboard.py` line 31 | `from silo_hashall_shared import DEFAULT_HASHALL_CACHE_BASE` → `from qb_cache_lib import DEFAULT_QB_CACHE_BASE` |
 | `bin/silo_cache_common.py` | Generalize discovery functions with `daemon_name` + `env_var` params |
 
 ### Deleted
@@ -130,11 +130,13 @@ def _fetch_torrents_snapshot(*, qbit_url, username, password):
 ### b. Add module-level cache constant
 
 ```python
-DEFAULT_QB_CACHE_BASE = Path.home() / ".cache" / "hashall-qb"  # keep same dir; shared with hashall readers
+DEFAULT_QB_CACHE_BASE = Path.home() / ".cache" / "silo-qb"
+LEGACY_QB_CACHE_BASE = Path.home() / ".cache" / "hashall-qb"
 ```
 
 Replace all inline `Path.home() / ".cache" / "hashall-qb"` in both parsers with
-this constant.
+the silo-owned default. Keep the legacy path only as a read fallback while
+downstream repos migrate.
 
 ### c. Fix `--daemon-cmd` default in `build_agent_parser`
 
@@ -186,10 +188,10 @@ Line 31 change:
 # Before:
 from silo_hashall_shared import DEFAULT_HASHALL_CACHE_BASE
 # After:
-from qb_cache_lib import DEFAULT_QB_CACHE_BASE as DEFAULT_HASHALL_CACHE_BASE
+from qb_cache_lib import DEFAULT_QB_CACHE_BASE
 ```
 
-The alias preserves all other references in the file without further changes.
+The dashboard uses the silo-owned cache base directly.
 
 ---
 
@@ -266,7 +268,7 @@ python3 -m py_compile bin/silo_cache_common.py
 
 # Daemon smoke test
 python3 bin/silo-cache-daemon.py --once
-ls -lah ~/.cache/hashall-qb/torrents-info.json
+ls -lah ~/.cache/silo-qb/torrents-info.json
 
 # Agent smoke test
 python3 bin/silo-cache-agent.py --max-age 30 | python3 -m json.tool | head -5
@@ -296,9 +298,9 @@ python3 -m pytest tests/ -v
 
 ## Critical Facts
 
-1. **Cache dir stays `~/.cache/hashall-qb`** — hashall reads from here.
+1. **Cache dir is `~/.cache/silo-qb`** — `~/.cache/hashall-qb` is read fallback only.
 2. **Zombie fix present** — `if args.max_age <= 0: return 0` in `agent_main()` (~line 328).
-3. **Alias in dashboard** — `DEFAULT_QB_CACHE_BASE as DEFAULT_HASHALL_CACHE_BASE` avoids wider diff.
+3. **Dashboard default** — `--cache-base-dir` defaults to `DEFAULT_QB_CACHE_BASE`.
 4. **Don't touch hashall** — cleanup of hashall copies is a separate PR.
 5. **History import before adaptation** — Step 0 must precede Step 1.
 6. **`silo-cache-daemon.py` docstring must contain `silo-cache-daemon`** — used by validator.

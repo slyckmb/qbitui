@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Version: 1.4.3
+# Version: 1.4.4
 # rt-status.sh — rTorrent state dashboard
 #
 # Reads rTorrent state from the shared silo cache by default.
 # Direct XMLRPC access is available only via --direct for one-off diagnostics.
 set -euo pipefail
 
-SCRIPT_VERSION="1.4.3"
+SCRIPT_VERSION="1.4.4"
 RT_CONTAINER="${RT_CONTAINER:-rtorrent_vpn}"
 RT_RPC_URL="${RT_RPC_URL:-http://localhost:8000/}"
 RT_CACHE_SUMMARY="${RT_CACHE_SUMMARY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rt-cache-summary.py}"
@@ -49,8 +49,9 @@ Env:
 States:
   checking    — hash check in progress (d.hashing>0)
   error       — fatal: d.message set on incomplete item (download stuck/broken)
-  trk_warn    — informational: d.message set on complete seeding item (tracker
-                announce rejection; content is fine — peer_limit, multi_location, etc.)
+  tracker_issue — informational: tracker message on non-fatal item; often
+                  seeding fine despite announce rejection
+  trk_warn      — legacy alias for tracker_issue
   downloading — active download (state=1, incomplete, down.rate>0)
   stalledDL   — stalled download (state=1, incomplete, down.rate=0)
   stalledUP   — seeding, no upload activity
@@ -58,8 +59,7 @@ States:
   stoppedUP   — complete, stopped
   stoppedDL   — incomplete, stopped
 
-  Note: cache mode maps .states.error → trk_warn (pre-split; error_fatal=0 until
-  silo cache daemon emits .states.error_fatal separately).
+  Note: cache summary still emits tracker_warn_total for compatibility.
 
 Options:
   --interval N        Poll interval seconds (default: 30)
@@ -400,7 +400,7 @@ print_dashboard() {
   bars+=("DL:$(color_num "$dl_total" $([[ "$dl_total" -gt 0 ]] && echo watch || echo dim))")
   bars+=("UL:$(color_num "$ul_total" good)")
   if [[ "$trk_warn" -gt 0 ]] 2>/dev/null; then
-    bars+=("trk_warn:$(color_num "$trk_warn" warn)")
+    bars+=("tracker_issue:$(color_num "$trk_warn" warn)")
     if [[ -n "$trk_breakdown" ]]; then
       while IFS=$'\t' read -r cat cnt; do
         [[ -z "$cat" ]] && continue
@@ -635,10 +635,10 @@ while true; do
       "$DOWN" "$STALLED_DL" "$PAUSED_DL" "$STOPPED_DL" "$STALLED_UP" "$UPLOADING" \
       "$STOPPED_UP" "$TOTAL"
   else
-    printf '%s transport=%s detail=%q checking=%s error=%s trk_warn=%s downloading=%s stalledDL=%s pausedDL=%s stoppedDL=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s total=%s top=%s\n' \
+    printf '%s transport=%s detail=%q checking=%s error=%s tracker_issue=%s trk_warn=%s downloading=%s stalledDL=%s pausedDL=%s stoppedDL=%s seeding=%s stalledUP=%s uploading=%s stoppedUP=%s total=%s top=%s\n' \
       "$(date '+%F %T')" \
       "$RT_TRANSPORT_LABEL" "$RT_TRANSPORT_DETAIL" \
-      "$CHECKING" "$ERROR" "$TRACKER_WARN" "$DOWN" "$STALLED_DL" "$PAUSED_DL" "$STOPPED_DL" \
+      "$CHECKING" "$ERROR" "$TRACKER_WARN" "$TRACKER_WARN" "$DOWN" "$STALLED_DL" "$PAUSED_DL" "$STOPPED_DL" \
       "$SEEDING_UP" "$STALLED_UP" "$UPLOADING" \
       "$STOPPED_UP" \
       "$TOTAL" "$TOP_STATES"
