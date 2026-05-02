@@ -1,6 +1,6 @@
 # silo Project Tracker
 
-**Last updated:** 2026-04-02
+**Last updated:** 2026-05-01
 **Reviewed against:** actual code in `bin/`, `config/`, `silo` dispatcher
 
 ---
@@ -92,6 +92,12 @@ Priority: **P1** = correctness / data loss · **P2** = user-visible UX · **P3**
 
 **P2-C: rTorrent in dashboard — scope filtering same issue as P2-B**
 - *Fix:* Same approach — use row-level `state` for non-qBit clients.
+
+**P2-D: Status filter expression syntax for mixed include/exclude terms**
+- *Gap:* The `f` status prompt supports comma-separated OR terms and a leading `!`, but `!` negates the whole status filter. There is no prompt syntax for `not SU`, `not U`, and `(ti OR nt)` together.
+- *Desired:* Support concise mixed expressions such as `!su,!u,+ti,+nt`, or allow compound filters with repeated status clauses such as `status=!su,u status=ti,nt`.
+- *Current internal workaround:* Two status filters can represent this: one negated `["su", "u"]`, plus one positive `["ti", "nt"]`.
+- *Files:* `bin/silo-dashboard.py` — status prompt parsing, compound filter parsing, `apply_filters()` tests.
 
 ### P3 — Code Quality / Tech Debt
 
