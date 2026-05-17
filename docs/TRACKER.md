@@ -1,6 +1,6 @@
 # silo Project Tracker
 
-**Last updated:** 2026-05-01
+**Last updated:** 2026-05-06
 **Reviewed against:** actual code in `bin/`, `config/`, `silo` dispatcher
 
 ---
@@ -113,6 +113,13 @@ Priority: **P1** = correctness / data loss · **P2** = user-visible UX · **P3**
 - *Gap:* If queue fetch fails but history succeeds within `fetch()`, `last_error` is cleared by the history success. Queue error is silently lost.
 - *Impact:* Very unlikely in practice (same endpoint, same credentials). Low priority.
 - *Fix:* Accumulate errors across both calls rather than overwriting.
+
+**P3-D: Fix qB cache meta `daemon_pid` drift**
+- *Gap:* `~/.cache/silo-qb/torrents-info.meta.json` can retain an older dead `daemon_pid` while `~/.cache/silo-qb/daemon.pid` points at the live daemon.
+- *Impact:* Cache payload remains fresh and usable, but status/observability metadata is misleading for operators and agents.
+- *Expected:* Meta `daemon_pid` should match the active daemon writing the cache, or status output should clearly distinguish writer PID from current supervisor PID. Stale meta PID should not survive normal daemon refresh cycles.
+- *Observed from hashall Phase 0:* `daemon.pid` live PID `500949`; `torrents-info.meta.json` daemon PID `2445731` was not running; cache source `daemon_live`; `consecutive_failures: 0`; active leases present.
+- *Constraint:* Low/medium priority. Do not restart active daemons just to fix this; fix lifecycle/meta update behavior in silo.
 
 ### P4 — Future Capability
 
